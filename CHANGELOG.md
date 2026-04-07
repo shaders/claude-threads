@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.1] - 2026-04-07
+
+### Security
+- **Bump path-to-regexp to 8.4.0** - Fixes CVE-2026-4926 (DoS via malicious route patterns) (#303)
+
+### Dependencies
+- **Bump production dependencies** - @hono/node-server, @modelcontextprotocol/sdk, express-rate-limit, yauzl (#308)
+- **Bump dev dependencies** - TypeScript 5.9 to 6.0, @types/bun, @types/node, @types/react, lint-staged, typescript-eslint (#309)
+- **Bump CI actions** - actions/configure-pages 5 to 6, actions/deploy-pages 4 to 5, schneegans/dynamic-badges-action 1.7 to 1.8 (#304, #305, #306)
+
 ## [1.6.0] - 2026-03-27
 
 ### Added
