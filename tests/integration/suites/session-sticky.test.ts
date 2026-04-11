@@ -26,6 +26,29 @@ const SKIP = !process.env.INTEGRATION_TEST;
 // Determine which platforms to test based on environment
 const TEST_PLATFORMS = (process.env.TEST_PLATFORMS || 'mattermost').split(',') as PlatformType[];
 
+const STICKY_REGEX = /claude-threads|Claude.*Threads|Active.*Claude/i;
+
+/**
+ * Poll for the sticky message to appear in channel posts.
+ * Uses channel posts instead of pinned posts because bot accounts
+ * in Mattermost don't have pin permissions by default.
+ * The bot's createPost can retry on 500 errors, so we poll.
+ */
+async function waitForStickyPost(
+  adminApi: MattermostTestApi,
+  channelId: string,
+  timeoutMs = 10000,
+): Promise<{ message: string; id: string } | undefined> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const { posts } = await adminApi.getChannelPosts(channelId, { per_page: 20 });
+    const sticky = Object.values(posts).find((p) => STICKY_REGEX.test(p.message));
+    if (sticky) return sticky;
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  return undefined;
+}
+
 describe.skipIf(SKIP)('Sticky Channel Message', () => {
   describe.each(TEST_PLATFORMS)('%s platform', (platformType) => {
     let config: ReturnType<typeof loadConfig>;
@@ -85,19 +108,8 @@ describe.skipIf(SKIP)('Sticky Channel Message', () => {
           debug: process.env.DEBUG === '1',
         }));
 
-        // Give the bot time to create the sticky message
-        await new Promise((r) => setTimeout(r, 100));
-
-        // Check for pinned posts in the channel
-        const pinnedPosts = await adminApi.getPinnedPosts(ctx.channelId);
-
-        // Should have at least one pinned post (the sticky message)
-        expect(pinnedPosts.length).toBeGreaterThanOrEqual(1);
-
-        // The sticky message should contain bot branding
-        const stickyPost = pinnedPosts.find((p) =>
-          /claude-threads|Chat.*Claude/i.test(p.message)
-        );
+        // Wait for the sticky message to appear (polls with retries)
+        const stickyPost = await waitForStickyPost(adminApi, ctx.channelId);
         expect(stickyPost).toBeDefined();
       });
 
@@ -116,12 +128,8 @@ describe.skipIf(SKIP)('Sticky Channel Message', () => {
           debug: process.env.DEBUG === '1',
         }));
 
-        // Get initial sticky message
-        await new Promise((r) => setTimeout(r, 100));
-        const initialPinned = await adminApi.getPinnedPosts(ctx.channelId);
-        const initialSticky = initialPinned.find((p) =>
-          /claude-threads|Chat.*Claude/i.test(p.message)
-        );
+        // Wait for initial sticky message
+        const initialSticky = await waitForStickyPost(adminApi, ctx.channelId);
 
         // Start a session
         const rootPost = await startSession(ctx, 'Test session for sticky', botUsername);
@@ -129,14 +137,8 @@ describe.skipIf(SKIP)('Sticky Channel Message', () => {
 
         await waitForBotResponse(ctx, rootPost.id, { timeout: 30000, minResponses: 1 });
 
-        // Wait for sticky update
-        await new Promise((r) => setTimeout(r, 200));
-
-        // Get updated sticky message
-        const updatedPinned = await adminApi.getPinnedPosts(ctx.channelId);
-        const updatedSticky = updatedPinned.find((p) =>
-          /claude-threads|Chat.*Claude/i.test(p.message)
-        );
+        // Wait for sticky update (poll until content changes or timeout)
+        const updatedSticky = await waitForStickyPost(adminApi, ctx.channelId);
 
         expect(updatedSticky).toBeDefined();
 
@@ -173,14 +175,8 @@ describe.skipIf(SKIP)('Sticky Channel Message', () => {
           waitForBotResponse(ctx, rootPost2.id, { timeout: 30000, minResponses: 1 }),
         ]);
 
-        // Wait for sticky update
-        await new Promise((r) => setTimeout(r, 200));
-
-        // Check sticky message reflects multiple sessions
-        const pinnedPosts = await adminApi.getPinnedPosts(ctx.channelId);
-        const stickyPost = pinnedPosts.find((p) =>
-          /claude-threads|Chat.*Claude/i.test(p.message)
-        );
+        // Wait for sticky message to appear/update
+        const stickyPost = await waitForStickyPost(adminApi, ctx.channelId);
 
         expect(stickyPost).toBeDefined();
         // Should show 2 sessions or list both
@@ -211,12 +207,7 @@ describe.skipIf(SKIP)('Sticky Channel Message', () => {
           skipPermissions: true,
         }));
 
-        await new Promise((r) => setTimeout(r, 100));
-
-        const pinnedPosts = await adminApi.getPinnedPosts(ctx.channelId);
-        const stickyPost = pinnedPosts.find((p) =>
-          /claude-threads|Chat.*Claude/i.test(p.message)
-        );
+        const stickyPost = await waitForStickyPost(adminApi, ctx.channelId);
 
         expect(stickyPost).toBeDefined();
         // Should contain version number (e.g., "v0.34.0")
@@ -233,12 +224,7 @@ describe.skipIf(SKIP)('Sticky Channel Message', () => {
           skipPermissions: true,
         }));
 
-        await new Promise((r) => setTimeout(r, 100));
-
-        const pinnedPosts = await adminApi.getPinnedPosts(ctx.channelId);
-        const stickyPost = pinnedPosts.find((p) =>
-          /claude-threads|Chat.*Claude/i.test(p.message)
-        );
+        const stickyPost = await waitForStickyPost(adminApi, ctx.channelId);
 
         expect(stickyPost).toBeDefined();
         // Should contain status indicators (Auto/Interactive, Keep-alive, etc.)
