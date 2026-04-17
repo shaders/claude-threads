@@ -63,6 +63,7 @@ export const SUPPORTED_TEXT_TYPES = [
 /** Text file extensions (fallback when MIME type is generic) */
 export const TEXT_FILE_EXTENSIONS = [
   '.txt', '.md', '.markdown', '.json', '.csv', '.xml', '.yaml', '.yml',
+  '.har', '.log',
   '.js', '.ts', '.jsx', '.tsx', '.py', '.rb', '.go', '.rs', '.java',
   '.c', '.cpp', '.h', '.hpp', '.cs', '.php', '.swift', '.kt', '.scala',
   '.sh', '.bash', '.zsh', '.fish', '.ps1', '.bat', '.cmd',
@@ -924,6 +925,21 @@ export async function processFiles(
   }
 
   return { blocks, skipped };
+}
+
+/**
+ * Format a user-facing feedback message for skipped files.
+ */
+export function formatSkippedFilesFeedback(skippedFiles: SkippedFile[]): string {
+  const lines = ['⚠️ **Some files could not be processed:**'];
+  for (const file of skippedFiles) {
+    let line = `- **${file.name}**: ${file.reason}`;
+    if (file.suggestion) {
+      line += ` _(${file.suggestion})_`;
+    }
+    lines.push(line);
+  }
+  return lines.join('\n');
 }
 
 // ---------------------------------------------------------------------------

@@ -37,6 +37,7 @@ import {
   formatContextForClaude,
 } from '../operations/context-prompt/index.js';
 import { formatSideConversationsForClaude } from '../operations/side-conversation/index.js';
+import { processFiles, formatSkippedFilesFeedback } from '../operations/streaming/handler.js';
 import { detectWorktreeInfo } from '../git/worktree.js';
 
 const log = createLogger('lifecycle');
@@ -893,6 +894,14 @@ export async function startSession(
 
   // Send the message to Claude (no context prompt, or no previous messages)
   claude.sendMessage(content);
+
+  // Post feedback for any files that were silently skipped during buildMessageContent
+  if (options.files && options.files.length > 0) {
+    const { skipped } = await processFiles(session.platform, options.files);
+    if (skipped.length > 0) {
+      await session.platform.createPost(formatSkippedFilesFeedback(skipped), actualThreadId);
+    }
+  }
 
   // NOTE: We don't persist here. We wait for Claude to actually respond before persisting.
   // This prevents persisting sessions where Claude dies before saving its conversation,

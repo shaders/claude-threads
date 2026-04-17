@@ -61,7 +61,7 @@ import {
 } from './types.js';
 import { createLogger } from '../utils/logger.js';
 import { TypedEventEmitter, createMessageManagerEvents } from './message-manager-events.js';
-import { processFiles, type SkippedFile } from './streaming/handler.js';
+import { processFiles, formatSkippedFilesFeedback, type SkippedFile } from './streaming/handler.js';
 
 const log = createLogger('msg-mgr');
 
@@ -1056,7 +1056,7 @@ export class MessageManager {
 
     // Post feedback for skipped files
     if (skippedFiles.length > 0) {
-      const feedback = this.formatSkippedFilesFeedback(skippedFiles);
+      const feedback = formatSkippedFilesFeedback(skippedFiles);
       await this.platform.createPost(feedback, this.threadId);
     }
 
@@ -1072,21 +1072,6 @@ export class MessageManager {
 
     logger.debug('User message sent to Claude');
     return true;
-  }
-
-  /**
-   * Format feedback message for skipped files.
-   */
-  private formatSkippedFilesFeedback(skippedFiles: SkippedFile[]): string {
-    const lines = ['⚠️ **Some files could not be processed:**'];
-    for (const file of skippedFiles) {
-      let line = `- **${file.name}**: ${file.reason}`;
-      if (file.suggestion) {
-        line += ` _(${file.suggestion})_`;
-      }
-      lines.push(line);
-    }
-    return lines.join('\n');
   }
 
   /**
