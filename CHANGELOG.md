@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.2] - 2026-04-20
+
+### Fixed
+- **MCP server path resolution in bundled builds** - Fixes `__dirname` resolution when the project is bundled with `bun build` into a single `dist/index.js` (#316)
+- **CLAUDE_THREADS_INTERACTIVE forwarding to daemon subprocess** - Parent no longer falsely advertises a TTY to the piped-stdio child in daemon mode (#312, #317)
+- **Sticky message test regex** - Updated to match the actual header format (#319)
+- **Flaky permissions integration test** - Uses pattern-based waits instead of fixed post counts to tolerate intermittent CI 500s (#320)
+
+### Security
+- **Override path-to-regexp to >=8.4.0** - Fixes CVE-2026-4926 (HIGH severity DoS) pulled in transitively via @modelcontextprotocol/sdk → express → router (#318)
+- **Bump hono to 4.12.14** - Fixes GHSA-458j-xx4x-4375 (improper JSX attribute name handling in hono/jsx SSR) (#324)
+
+### Dependencies
+- **Bump production dependencies** - @hono/node-server, hono, @redactpii/node, react (#311, #326)
+- **Bump dev dependencies** - @types/yazl, @types/bun, @types/node, prettier, typescript-eslint (#310, #322)
+- **Bump CI actions** - actions/upload-pages-artifact 4 to 5 (#321)
+
 ## [1.6.1] - 2026-04-07
 
 ### Security
