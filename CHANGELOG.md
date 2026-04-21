@@ -5,12 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.7.0] - 2026-04-21
 
 ### Added
-- **Multi-account Claude support (opt-in)** — configure a pool of Claude accounts in `config.yaml` so sessions round-robin across multiple subscriptions / API keys and stop sharing one token budget. Each Claude CLI spawn runs with an overridden `HOME` (for OAuth Pro/Max accounts) or `ANTHROPIC_API_KEY`. Persisted sessions remember which account they were started on and resume under the same one. Omitting `claudeAccounts` leaves the bot in single-account mode — zero change for existing installs.
-- **Rate-limit detection & auto-reassignment** — the bot parses Claude's stderr and result events for rate-limit signals (`usage limit reached`, `rate_limit_error`, `429 ... rate limit`, `quota exceeded`) and puts the offending account into cooldown until the extracted reset time (with a 1-hour fallback). A heads-up is posted in the session thread so the user knows which account is cooling.
-- **Session header & sticky-message account indicators** — the per-session header shows `🔑 Claude account` when multi-account mode is active, and the channel sticky summarizes the pool: `🔑 N accounts` or `🔑 A/N accounts (K cooling)`.
+- **Multi-account Claude support (opt-in)** — configure a pool of Claude accounts in `config.yaml` so sessions round-robin across multiple subscriptions / API keys and stop sharing one token budget. Each Claude CLI spawn runs with an overridden `HOME` (for OAuth Pro/Max accounts) or `ANTHROPIC_API_KEY`. Persisted sessions remember which account they were started on and resume under the same one. Omitting `claudeAccounts` leaves the bot in single-account mode — zero change for existing installs. (#328, thanks @shaders)
+- **Rate-limit detection & auto-reassignment** — the bot parses Claude's stderr and result events for rate-limit signals (`usage limit reached`, `rate_limit_error`, `429 ... rate limit`, `quota exceeded`) and puts the offending account into cooldown until the extracted reset time (with a 1-hour fallback). A heads-up is posted in the session thread so the user knows which account is cooling. (#328)
+- **Session header & sticky-message account indicators** — the per-session header shows `🔑 Claude account` when multi-account mode is active, and the channel sticky summarizes the pool: `🔑 N accounts` or `🔑 A/N accounts (K cooling)`. (#328)
 
 ## [1.6.3] - 2026-04-21
 
