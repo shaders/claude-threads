@@ -209,6 +209,11 @@ function createMockSessionContext(sessions: Map<string, Session> = new Map()): S
       forceUpdate: mock(async () => {}),
       deferUpdate: mock(() => {}),
       handleBugReportApproval: mock(async () => {}),
+      acquireClaudeAccount: mock(() => null),
+      getClaudeAccount: mock(() => undefined),
+      releaseClaudeAccount: mock(() => {}),
+      markClaudeAccountCooling: mock(() => {}),
+      getClaudeAccountPoolStatus: mock(() => []),
     },
   };
 }
@@ -336,6 +341,57 @@ describe('Lifecycle Module', () => {
       expect(session.timeoutWarningPosted).toBe(true);
       expect(sessions.has('test-platform:thread-123')).toBe(true);
     });
+  });
+});
+
+describe('handleRateLimit (multi-account cooldown wiring)', () => {
+  /**
+   * Regression test for reviewer S1: without this coverage, the three
+   * wiring bugs it pairs with (M1 restart-rebind, M2 false-positive, M3
+   * account leak) could all regress silently. This test exercises the
+   * actual handler function that bindings call.
+   */
+  it('cools the session account when a rate-limit hit fires', () => {
+    const session = createMockSession({ claudeAccountId: 'alice' });
+    const ctx = createMockSessionContext(new Map([['test-platform:thread-123', session]]));
+
+    lifecycle.handleRateLimit(
+      session,
+      { detected: true, matched: 'usage limit reached', resetAtEpochMs: Date.now() + 60_000 },
+      ctx
+    );
+
+    expect(ctx.ops.markClaudeAccountCooling).toHaveBeenCalledTimes(1);
+    const [acctId, deadlineMs] = (ctx.ops.markClaudeAccountCooling as ReturnType<typeof mock>).mock.calls[0];
+    expect(acctId).toBe('alice');
+    expect(deadlineMs).toBeGreaterThan(Date.now());
+  });
+
+  it('falls back to the default 1-hour cooldown when reset time is unknown', () => {
+    const session = createMockSession({ claudeAccountId: 'bob' });
+    const ctx = createMockSessionContext(new Map([['test-platform:thread-123', session]]));
+
+    const before = Date.now();
+    lifecycle.handleRateLimit(session, { detected: true, matched: 'rate_limit_error' }, ctx);
+    const after = Date.now();
+
+    const [, deadlineMs] = (ctx.ops.markClaudeAccountCooling as ReturnType<typeof mock>).mock.calls[0];
+    // Default is 1h — allow a wide window for clock drift in the test.
+    expect(deadlineMs).toBeGreaterThanOrEqual(before + 59 * 60_000);
+    expect(deadlineMs).toBeLessThanOrEqual(after + 61 * 60_000);
+  });
+
+  it('is a no-op in single-account mode (no account id on session)', () => {
+    const session = createMockSession({ claudeAccountId: undefined });
+    const ctx = createMockSessionContext(new Map([['test-platform:thread-123', session]]));
+
+    lifecycle.handleRateLimit(
+      session,
+      { detected: true, matched: 'usage limit reached' },
+      ctx
+    );
+
+    expect(ctx.ops.markClaudeAccountCooling).not.toHaveBeenCalled();
   });
 });
 

@@ -75,6 +75,15 @@ export interface PersistedSession {
   resumeFailCount?: number;                      // Count of consecutive resume failures
   // History retention (soft delete)
   cleanedAt?: string;                            // ISO date when session was soft-deleted (kept for history)
+  // Multi-account support
+  /**
+   * Claude account id the session was started under, if the bot is configured
+   * with a `claudeAccounts` pool. Resume MUST pick the same account — for
+   * OAuth accounts the conversation history lives under that account's HOME
+   * and cannot be read from a different one. Undefined for legacy sessions
+   * and for bots running in single-account mode.
+   */
+  claudeAccountId?: string;
 }
 
 /**

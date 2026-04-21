@@ -7,7 +7,8 @@
 import type { Session } from '../../session/types.js';
 import { transitionTo } from '../../session/types.js';
 import type { SessionContext } from '../session-context/index.js';
-import type { ClaudeCliOptions, ClaudeEvent } from '../../claude/cli.js';
+import type { ClaudeCliOptions, ClaudeEvent, RateLimitHit } from '../../claude/cli.js';
+import { handleRateLimit } from '../../session/lifecycle.js';
 import { ClaudeCli } from '../../claude/cli.js';
 import { randomUUID } from 'crypto';
 import { resolve } from 'path';
@@ -62,6 +63,23 @@ const sessionLog = createSessionLog(log);
 // ---------------------------------------------------------------------------
 
 /**
+ * Build the `account` option for a Claude CLI restart.
+ *
+ * Sessions that already run under a pooled Claude account must keep using the
+ * same credentials when Claude is respawned (e.g. !cd, !permissions interactive).
+ * Returns undefined for sessions started in single-account mode.
+ */
+function sessionAccountOption(
+  session: Session,
+  ctx: SessionContext
+): ClaudeCliOptions['account'] {
+  if (!session.claudeAccountId) return undefined;
+  const account = ctx.ops.getClaudeAccount(session.claudeAccountId);
+  if (!account) return undefined;
+  return { id: account.id, home: account.home, apiKey: account.apiKey };
+}
+
+/**
  * Restart Claude CLI with new options.
  * Handles the common pattern of kill -> flush -> create new CLI -> rebind -> start.
  * Returns true on success, false if start failed.
@@ -83,9 +101,13 @@ export async function restartClaudeSession(
   // Create new Claude CLI
   session.claude = new ClaudeCli(cliOptions);
 
-  // Rebind event handlers (use sessionId which is the composite key)
+  // Rebind event handlers (use sessionId which is the composite key).
+  // The rate-limit listener MUST be rebound here too — without it, a !cd or
+  // !permissions interactive restart would silently drop rate-limit signals
+  // from the new Claude process and the account would never enter cooldown.
   session.claude.on('event', (e: ClaudeEvent) => ctx.ops.handleEvent(session.sessionId, e));
   session.claude.on('exit', (code: number) => ctx.ops.handleExit(session.sessionId, code));
+  session.claude.on('rate-limit', (hit: RateLimitHit) => handleRateLimit(session, hit, ctx));
 
   // Start the new Claude CLI
   try {
@@ -365,6 +387,7 @@ export async function changeDirectory(
     appendSystemPrompt,  // Include platform context and commands
     logSessionId: session.sessionId,  // Route logs to session panel
     permissionTimeoutMs: ctx.config.permissionTimeoutMs,
+    account: sessionAccountOption(session, ctx),
   };
 
   // Restart Claude with new options
@@ -527,6 +550,7 @@ export async function enableInteractivePermissions(
     platformConfig: session.platform.getMcpConfig(),
     logSessionId: session.sessionId,  // Route logs to session panel
     permissionTimeoutMs: ctx.config.permissionTimeoutMs,
+    account: sessionAccountOption(session, ctx),
   };
 
   // Restart Claude with new options
@@ -707,6 +731,13 @@ export async function updateSessionHeader(
 
   if (otherParticipants) {
     items.push(['👥', 'Participants', otherParticipants]);
+  }
+
+  // Claude account (only when the bot is running in multi-account mode)
+  if (session.claudeAccountId) {
+    const account = ctx.ops.getClaudeAccount(session.claudeAccountId);
+    const label = account?.displayName ?? session.claudeAccountId;
+    items.push(['🔑', 'Claude account', formatter.formatCode(label)]);
   }
 
   items.push(['🆔', 'Session ID', formatter.formatCode(session.claudeSessionId.substring(0, 8))]);

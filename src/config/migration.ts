@@ -9,6 +9,7 @@ export type {
   ThreadLogsConfig,
   LimitsConfig,
   StickyMessageCustomization,
+  ClaudeAccount,
   Config,
   PlatformInstanceConfig,
   MattermostPlatformConfig,

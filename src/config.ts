@@ -15,6 +15,7 @@ export type {
   WorktreeMode,
   LimitsConfig,
   StickyMessageCustomization,
+  ClaudeAccount,
 } from './config/migration.js';
 
 export { resolveLimits, LIMITS_DEFAULTS } from './config/migration.js';

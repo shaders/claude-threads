@@ -142,6 +142,56 @@ platforms:
 
 Configuration is stored in YAML only - no `.env` file support.
 
+## Multi-Account Claude Support (opt-in)
+
+By default every session spawns `claude` with the bot's own `process.env`, so
+they all share one subscription's token budget. When you expect heavy concurrent
+use, configure a pool of accounts in `config.yaml` — sessions will round-robin
+across them and new ones automatically skip accounts that are in rate-limit
+cooldown.
+
+```yaml
+# Omit this block entirely → single-account mode (unchanged behavior).
+claudeAccounts:
+  # OAuth Pro/Max — prepare the HOME with `HOME=<path> claude login` first
+  - id: primary
+    home: /home/bot/.claude-accounts/primary
+  - id: backup
+    displayName: Backup (Pro)
+    home: /home/bot/.claude-accounts/backup
+
+  # API-key billed
+  - id: shared-api
+    apiKey: sk-ant-api03-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+How it works:
+
+1. **Spawn env override.** For `home` we set `HOME` (and `USERPROFILE` on Windows)
+   so Claude reads `.credentials.json`, `.claude/projects/*`, and MCP config from
+   that directory. For `apiKey` we set `ANTHROPIC_API_KEY` (leaving HOME as-is).
+2. **Session → account binding is persisted.** `PersistedSession.claudeAccountId`
+   stores which account a session started on, so resume after a bot restart uses
+   the same credentials — critical for OAuth accounts since the conversation
+   history in `~/.claude/projects/*` lives under that HOME.
+3. **Rate-limit handling.** Claude's stderr and result events are scanned for
+   phrases like `usage limit reached`, `rate_limit_error`, `429 ... rate limit`,
+   `quota exceeded`. On a hit the offending account is cooled down until the
+   extracted reset time (fallback: 1 hour). Future `acquireClaudeAccount()` calls
+   skip cooling accounts; resumed sessions bypass cooldown because their history
+   can't move.
+
+Files involved:
+
+| File | Role |
+|------|------|
+| `src/claude/account-pool.ts` | `AccountPool` — round-robin, cooldown tracking, usage accounting. |
+| `src/claude/rate-limit-detector.ts` | Pure parser that turns stderr/JSON into `{ detected, resetAtEpochMs }`. |
+| `src/claude/cli.ts` | `ClaudeCliOptions.account` → overrides `HOME` / `ANTHROPIC_API_KEY` on spawn. Emits `rate-limit` events. |
+| `src/session/lifecycle.ts` | Acquires the account on `startSession`/`resumeSession`, releases on `removeFromRegistry`, handles `rate-limit` events. |
+| `src/operations/commands/handler.ts` | Preserves the account when `!cd` / `!permissions interactive` respawn Claude; adds the 🔑 row to the session header. |
+| `src/operations/sticky-message/handler.ts` | Pool summary in the channel sticky. |
+
 ## Source Files
 
 ### Core

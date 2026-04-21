@@ -86,6 +86,32 @@ export interface StickyMessageCustomization {
   footer?: string;
 }
 
+/**
+ * One Claude subscription/account the bot can spawn sessions under.
+ *
+ * Exactly one of `home` or `apiKey` should be set:
+ * - `home`: path to an alternate $HOME that contains `.claude/.credentials.json`
+ *   from a prior `HOME=<path> claude login`. Used for OAuth Pro/Max subscriptions.
+ *   Claude's history (`~/.claude/projects/...`) also lives here, so a resumed
+ *   session MUST pick the same account.
+ * - `apiKey`: direct Anthropic API key. Billed against that key's account.
+ *   History still persists under the bot's default HOME because Claude only
+ *   uses `apiKey` for billing, not for state storage.
+ *
+ * Leaving `claudeAccounts` unset in config keeps the bot in single-account mode:
+ * every session inherits `process.env` exactly as before.
+ */
+export interface ClaudeAccount {
+  /** Stable identifier used in logs, UI, and persisted session state. */
+  id: string;
+  /** Alternate $HOME for OAuth-based accounts. Mutually exclusive with apiKey. */
+  home?: string;
+  /** Anthropic API key for API-billed accounts. Mutually exclusive with home. */
+  apiKey?: string;
+  /** Optional human-readable label shown in UI (defaults to `id`). */
+  displayName?: string;
+}
+
 export interface Config {
   version: number;
   workingDir: string;
@@ -96,6 +122,8 @@ export interface Config {
   threadLogs?: ThreadLogsConfig; // Optional thread logging configuration
   limits?: LimitsConfig; // Optional resource limits and timeouts
   stickyMessage?: StickyMessageCustomization; // Optional sticky message customization
+  /** Optional Claude account pool. When omitted, bot runs in single-account mode. */
+  claudeAccounts?: ClaudeAccount[];
   platforms: PlatformInstanceConfig[];
 }
 

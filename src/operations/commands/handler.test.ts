@@ -166,6 +166,11 @@ function createMockSessionContext(sessions: Map<string, Session> = new Map()): S
       forceUpdate: mock(async () => {}),
       deferUpdate: mock(() => {}),
       handleBugReportApproval: mock(async () => {}),
+      acquireClaudeAccount: mock(() => null),
+      getClaudeAccount: mock(() => undefined),
+      releaseClaudeAccount: mock(() => {}),
+      markClaudeAccountCooling: mock(() => {}),
+      getClaudeAccountPoolStatus: mock(() => []),
     },
   };
 }

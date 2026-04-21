@@ -17,6 +17,8 @@ import type { PlatformClient, PlatformFile } from '../../platform/index.js';
 import type { SessionStore } from '../../persistence/session-store.js';
 import type { SessionInfo } from '../../ui/types.js';
 import type { BuiltMessageContent } from '../streaming/handler.js';
+import type { ClaudeAccount } from '../../config.js';
+import type { AccountPoolStatus } from '../../claude/account-pool.js';
 
 // =============================================================================
 // Configuration (read-only state)
@@ -222,6 +224,41 @@ export interface SessionOperations {
 
   /** Emit session:remove event for UI */
   emitSessionRemove(sessionId: string): void;
+
+  // ---------------------------------------------------------------------------
+  // Claude Account Pool
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Reserve a Claude account for a new or resumed session.
+   *
+   * Returns `null` when the bot is in single-account mode (no pool configured)
+   * or when every account is currently in rate-limit cooldown. Callers that
+   * receive `null` should fall back to spawning Claude with `process.env`.
+   *
+   * `preferredId` is honored even if the account is currently cooling — this
+   * is required for resume, because OAuth history lives under a specific HOME.
+   */
+  acquireClaudeAccount(preferredId?: string): ClaudeAccount | null;
+
+  /**
+   * Look up the Claude account metadata for a session that already holds one.
+   * Used by session restart paths (e.g. !cd) that must keep using the same
+   * account without re-acquiring it from the round-robin pool.
+   */
+  getClaudeAccount(accountId: string): ClaudeAccount | undefined;
+
+  /** Return an account to the pool when a session ends. No-op for unknown ids. */
+  releaseClaudeAccount(accountId: string): void;
+
+  /**
+   * Mark an account as rate-limited until the given epoch timestamp. Future
+   * round-robin picks skip the account until the timestamp passes.
+   */
+  markClaudeAccountCooling(accountId: string, untilEpochMs: number): void;
+
+  /** Snapshot of pool state for sticky-message / header rendering. */
+  getClaudeAccountPoolStatus(): AccountPoolStatus[];
 }
 
 // =============================================================================

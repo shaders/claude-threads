@@ -16,7 +16,8 @@ import { EventEmitter } from 'events';
 import { ClaudeEvent } from '../claude/cli.js';
 import type { PlatformClient, PlatformUser, PlatformPost, PlatformFile } from '../platform/index.js';
 import { SessionStore, PersistedSession, PersistedContextPrompt } from '../persistence/session-store.js';
-import { WorktreeMode, type LimitsConfig, resolveLimits } from '../config.js';
+import { WorktreeMode, type LimitsConfig, type ClaudeAccount, resolveLimits } from '../config.js';
+import { AccountPool } from '../claude/account-pool.js';
 import type { SessionInfo } from '../ui/types.js';
 import {
   isCancelEmoji,
@@ -106,6 +107,9 @@ export class SessionManager extends EventEmitter {
   // Auto-update manager (set via setAutoUpdateManager)
   private autoUpdateManager: commands.AutoUpdateManagerInterface | null = null;
 
+  // Claude account pool (single-account mode when empty)
+  private readonly accountPool: AccountPool;
+
   constructor(
     workingDir: string,
     skipPermissions = false,
@@ -114,7 +118,8 @@ export class SessionManager extends EventEmitter {
     sessionsPath?: string,
     threadLogsEnabled = true,
     threadLogsRetentionDays = 30,
-    limits?: LimitsConfig
+    limits?: LimitsConfig,
+    claudeAccounts?: ClaudeAccount[]
   ) {
     super();
     this.workingDir = workingDir;
@@ -126,6 +131,7 @@ export class SessionManager extends EventEmitter {
     this.limits = resolveLimits(limits);
     this.sessionStore = new SessionStore(sessionsPath);
     this.registry = new SessionRegistry(this.sessionStore);
+    this.accountPool = new AccountPool(claudeAccounts);
 
     // Create background tasks (started in initialize())
     this.sessionMonitor = new SessionMonitor({
@@ -313,6 +319,13 @@ export class SessionManager extends EventEmitter {
       emitSessionAdd: (s) => this.emitSessionAdd(s),
       emitSessionUpdate: (sid, u) => this.emitSessionUpdate(sid, u),
       emitSessionRemove: (sid) => this.emitSessionRemove(sid),
+
+      // Claude account pool (null when single-account mode)
+      acquireClaudeAccount: (preferredId) => this.accountPool.acquire(preferredId),
+      getClaudeAccount: (id) => this.accountPool.get(id),
+      releaseClaudeAccount: (id) => this.accountPool.release(id),
+      markClaudeAccountCooling: (id, untilMs) => this.accountPool.markCooling(id, untilMs),
+      getClaudeAccountPoolStatus: () => this.accountPool.status(),
     };
 
     return createSessionContext(config, state, ops);
@@ -711,6 +724,7 @@ export class SessionManager extends EventEmitter {
       pullRequestUrl: session.pullRequestUrl,
       messageCount: session.messageCount,
       resumeFailCount: session.lifecycle.resumeFailCount,
+      claudeAccountId: session.claudeAccountId,
     };
     this.sessionStore.save(session.sessionId, state);
   }
@@ -749,6 +763,7 @@ export class SessionManager extends EventEmitter {
       debug: this.debug,
       description: this.customDescription,
       footer: this.customFooter,
+      accountPoolStatus: this.accountPool.isEmpty ? undefined : this.accountPool.status(),
     });
   }
 
