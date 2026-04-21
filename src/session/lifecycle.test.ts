@@ -2,14 +2,34 @@ import { describe, it, expect, mock } from 'bun:test';
 
 // Mock ClaudeCli so startSession doesn't spawn a real Claude process.
 // Must be declared before importing lifecycle so the module cache picks it up.
+//
+// NOTE: Bun's mock.module() persists globally across the test run in Bun
+// 1.3.13+, so this mock can leak into src/claude/cli.test.ts (whose files
+// load after src/session/ alphabetically). The mock class must therefore
+// expose the same method surface as the real ClaudeCli, with return values
+// that also satisfy cli.test.ts's "freshly constructed, not started"
+// assumptions (isRunning === false, interrupt === false, etc.).
+//
+// The startSession tests here don't depend on isRunning() being true because
+// the initial claude.sendMessage(content) call isn't gated by isRunning() on
+// the first-send path.
 mock.module('../claude/cli.js', () => ({
   ClaudeCli: class MockClaudeCli {
-    isRunning() { return true; }
+    isRunning() { return false; }
     kill() { return Promise.resolve(); }
     start() {}
     sendMessage() {}
+    sendToolResult() {}
     on() {}
-    interrupt() {}
+    off() {}
+    interrupt() { return false; }
+    getStatusFilePath() { return null; }
+    getStatusData() { return null; }
+    getLastStderr() { return ''; }
+    isPermanentFailure() { return false; }
+    getPermanentFailureReason() { return null; }
+    startStatusWatch() {}
+    stopStatusWatch() {}
   },
 }));
 
