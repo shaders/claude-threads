@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.1] - 2026-04-21
+
+### Fixed
+- **Interactive users silently demoted to headless when `autoUpdate` was enabled** — the auto-restart daemon runs the child as a bash background job (`&`), which leaves stdout piped and stdin detached. Ink can't render there, so the TUI dropped out without any error. Three prior patches (#287, #300, #317) each fixed the active crash mode inside the daemon path; none questioned whether interactive users should be routed through the daemon at all. The daemon is now skipped when `process.stdout.isTTY` and `--headless` isn't set. Unattended paths (explicit `--auto-restart`, `--headless`, or no TTY) still go through the daemon. (#333)
+
 ## [1.8.0] - 2026-04-21
 
 ### Added
