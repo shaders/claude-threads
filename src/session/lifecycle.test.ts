@@ -15,11 +15,39 @@ import { describe, it, expect, mock } from 'bun:test';
 // the first-send path.
 mock.module('../claude/cli.js', () => ({
   ClaudeCli: class MockClaudeCli {
-    isRunning() { return false; }
-    kill() { return Promise.resolve(); }
-    start() {}
-    sendMessage() {}
-    sendToolResult() {}
+    debug: boolean;
+    private options: { skipPermissions?: boolean; platformConfig?: unknown };
+    private running = false;
+
+    constructor(options: { skipPermissions?: boolean; platformConfig?: unknown } = {}) {
+      // Real ClaudeCli reads env + argv here; cli.test.ts asserts on this.
+      this.debug = process.env.DEBUG === '1' || process.argv.includes('--debug');
+      this.options = options;
+    }
+
+    isRunning() { return this.running; }
+    kill() {
+      this.running = false;
+      return Promise.resolve();
+    }
+    start() {
+      // Mirror the real class's pre-spawn validation so cli.test.ts's
+      // "throws when skipPermissions is false but no platformConfig" still
+      // fires through the mock.
+      if (!this.options.skipPermissions && !this.options.platformConfig) {
+        throw new Error('platformConfig is required when skipPermissions is false');
+      }
+      this.running = true;
+    }
+    sendMessage() {
+      // Real class checks this.process?.stdin. cli.test.ts asserts sendMessage
+      // throws on a fresh (unstarted) instance; lifecycle.test.ts exercises
+      // the post-start path where it must not throw.
+      if (!this.running) throw new Error('Not running');
+    }
+    sendToolResult() {
+      if (!this.running) throw new Error('Not running');
+    }
     on() {}
     off() {}
     interrupt() { return false; }
