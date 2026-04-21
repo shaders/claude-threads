@@ -37,8 +37,18 @@ export class AccountPool {
       const hasAuth = !!acc.home || !!acc.apiKey;
       if (!hasAuth) {
         log.warn(`Claude account ${acc.id} has neither home nor apiKey — ignoring`);
+        return false;
       }
-      return hasAuth;
+      // home and apiKey are documented as mutually exclusive. Dropping here
+      // is the natural chokepoint so the later spawn path in cli.ts doesn't
+      // silently pick one over the other.
+      if (acc.home && acc.apiKey) {
+        log.warn(
+          `Claude account ${acc.id} has both home and apiKey set — must choose one; ignoring`
+        );
+        return false;
+      }
+      return true;
     });
     this.byId = new Map(this.accounts.map((acc) => [acc.id, acc]));
     for (const acc of this.accounts) {

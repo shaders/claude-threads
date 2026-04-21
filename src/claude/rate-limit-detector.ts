@@ -98,8 +98,11 @@ function extractResetAt(text: string, now: number): number | undefined {
     return now + value * unitMs[unit];
   }
 
-  // JSON-ish: "reset_at": 1234567890  (seconds)
-  const unix = text.match(/["']?reset(?:_at)?["']?\s*[:=]\s*(\d{10,13})/);
+  // JSON-ish: "reset_at": 1234567890  (seconds).
+  // Word-boundary anchors keep this from matching "preset": ... (the `p`
+  // has no \b before `r`) or reset_after=... (a relative retry-after hint,
+  // which would be silently misread here as an absolute epoch).
+  const unix = text.match(/\breset(?:_at)?\b\s*["']?\s*[:=]\s*(\d{10,13})/);
   if (unix) {
     const raw = parseInt(unix[1], 10);
     // 10 digits = seconds, 13 = ms

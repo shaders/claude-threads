@@ -92,6 +92,30 @@ describe('reset-time extraction', () => {
     expect(hit.detected).toBe(true);
     expect(hit.resetAtEpochMs).toBeUndefined();
   });
+
+  // Regression: the reset-time regex must not match other fields whose names
+  // contain "reset" as a substring. Before word-boundary anchors, both of the
+  // cases below extracted a bogus epoch and silently misrouted the cooldown.
+  it('does not match "preset": N (word-boundary regression)', () => {
+    const hit = detectRateLimit(
+      `rate_limit_error, "preset": 1700003600`,
+      NOW
+    );
+    // Phrase still triggers detection, but no reset extracted from "preset".
+    expect(hit.detected).toBe(true);
+    expect(hit.resetAtEpochMs).toBeUndefined();
+  });
+
+  it('does not match reset_after=N (relative hint, not absolute epoch)', () => {
+    const hit = detectRateLimit(
+      `rate_limit_error reset_after=1700003600`,
+      NOW
+    );
+    expect(hit.detected).toBe(true);
+    // reset_after would be a *relative* retry-after; interpreting it as an
+    // absolute epoch would put cooldown decades into the future.
+    expect(hit.resetAtEpochMs).toBeUndefined();
+  });
 });
 
 describe('false-positive guards (regression for M2)', () => {

@@ -8,7 +8,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { createLogger } from '../utils/logger.js';
 import { getClaudePath } from './version-check.js';
-import { detectRateLimit } from './rate-limit-detector.js';
+import { detectRateLimit, cooldownDeadline } from './rate-limit-detector.js';
 
 const log = createLogger('claude');
 
@@ -168,7 +168,10 @@ export class ClaudeCli extends EventEmitter {
   private statusFilePath: string | null = null;
   private lastStatusData: StatusLineData | null = null;
   private stderrBuffer = '';  // Capture stderr for error detection
-  private rateLimitEmitted = false;  // Fire 'rate-limit' only once per process
+  // Deadline of the last rate-limit hit we emitted. Zero means we haven't
+  // emitted one yet. Used to dedupe repeated hits at the same severity while
+  // still letting a LATER deadline through — see maybeEmitRateLimit().
+  private lastEmittedRateLimitDeadline = 0;
   private log: ReturnType<typeof createLogger>;  // Session-scoped logger
 
   constructor(options: ClaudeCliOptions) {
@@ -252,7 +255,7 @@ export class ClaudeCli extends EventEmitter {
 
     // Clear stderr buffer and rate-limit dedupe flag from any previous run
     this.stderrBuffer = '';
-    this.rateLimitEmitted = false;
+    this.lastEmittedRateLimitDeadline = 0;
 
     // Clean up stale browser bridge sockets (workaround for Claude CLI bug)
     cleanupBrowserBridgeSockets();
@@ -452,18 +455,29 @@ export class ClaudeCli extends EventEmitter {
 
   /**
    * Scan a stderr chunk or result-event body for rate-limit signals and, on a
-   * hit, emit a single `'rate-limit'` event with the parsed hit.
+   * hit, emit a `'rate-limit'` event with the parsed hit.
    *
-   * We guard against re-emitting on every subsequent stderr tick by keeping
-   * a small cursor: callers (SessionManager) will typically already have put
-   * the account into cooldown, so duplicate emits are harmless — but cheap to
-   * avoid.
+   * Dedupe semantics: we track the cooldown deadline of the last emit and
+   * re-emit only when a new hit would move the deadline FORWARD by more than
+   * a minute. This means:
+   *  - Identical hits from successive stderr chunks emit once (no spam):
+   *    relative hints like "Resets in 10 minutes" recompute against
+   *    `Date.now()` each call so deadlines drift by milliseconds — the
+   *    epsilon keeps that from counting as "new".
+   *  - A second rate-limit with a meaningfully longer reset (e.g. first hit
+   *    said 10 min, second says 1 hour) does re-emit, so
+   *    `AccountPool.markCooling` — which only extends cooldown — can widen
+   *    the deadline.
+   *  - A second hit with the same or earlier deadline is skipped: the pool
+   *    would have dropped it anyway.
    */
   private maybeEmitRateLimit(text: string): void {
     const hit = detectRateLimit(text);
     if (!hit.detected) return;
-    if (this.rateLimitEmitted) return;
-    this.rateLimitEmitted = true;
+    const newDeadline = cooldownDeadline(hit);
+    const MIN_ADVANCE_MS = 60_000;  // 1 minute: coarser than clock drift, finer than any real rate-limit reset step
+    if (newDeadline - this.lastEmittedRateLimitDeadline < MIN_ADVANCE_MS) return;
+    this.lastEmittedRateLimitDeadline = newDeadline;
     this.log.warn(`Rate limit detected: ${hit.matched ?? '(no match text)'}`);
     this.emit('rate-limit', hit);
   }

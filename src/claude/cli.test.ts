@@ -138,6 +138,68 @@ describe('ClaudeCli', () => {
       cli.stopStatusWatch();
     });
   });
+
+  describe('rate-limit emit guard', () => {
+    /**
+     * The ClaudeCli class exposes `'rate-limit'` events through a private
+     * `maybeEmitRateLimit` guard. The guard must dedupe repeat hits at the
+     * same severity (avoiding spam from stderr chunks) but still forward a
+     * new hit whose cooldown deadline moves FORWARD — otherwise
+     * `AccountPool.markCooling` (extend-only) would never see the wider
+     * window and the account would stay cool for only the shorter of the
+     * two deadlines.
+     *
+     * Using `(cli as any)` to reach the private method keeps the test tiny
+     * and hits exactly the code path that parseOutput / stderr handler use.
+     */
+    const callGuard = (cli: ClaudeCli, text: string) =>
+      (cli as unknown as { maybeEmitRateLimit: (t: string) => void }).maybeEmitRateLimit(text);
+
+    test('emits on first hit, dedupes identical repeats', () => {
+      const cli = new ClaudeCli({ workingDir: '/test' });
+      const hits: unknown[] = [];
+      cli.on('rate-limit', (h) => hits.push(h));
+
+      callGuard(cli, 'Usage limit reached. Resets in 10 minutes.');
+      callGuard(cli, 'Usage limit reached. Resets in 10 minutes.');  // same
+      callGuard(cli, 'Usage limit reached. Resets in 10 minutes.');  // same
+
+      expect(hits).toHaveLength(1);
+    });
+
+    test('re-emits when a later hit extends the cooldown deadline', () => {
+      const cli = new ClaudeCli({ workingDir: '/test' });
+      const hits: unknown[] = [];
+      cli.on('rate-limit', (h) => hits.push(h));
+
+      callGuard(cli, 'Usage limit reached. Resets in 10 minutes.');
+      callGuard(cli, 'Usage limit reached. Resets in 2 hours.');  // longer
+
+      expect(hits).toHaveLength(2);
+    });
+
+    test('does not re-emit when a later hit would not advance the deadline', () => {
+      const cli = new ClaudeCli({ workingDir: '/test' });
+      const hits: unknown[] = [];
+      cli.on('rate-limit', (h) => hits.push(h));
+
+      callGuard(cli, 'Usage limit reached. Resets in 2 hours.');
+      callGuard(cli, 'Usage limit reached. Resets in 10 minutes.');  // earlier
+
+      expect(hits).toHaveLength(1);
+    });
+
+    test('ignores non-rate-limit text', () => {
+      const cli = new ClaudeCli({ workingDir: '/test' });
+      const hits: unknown[] = [];
+      cli.on('rate-limit', (h) => hits.push(h));
+
+      callGuard(cli, 'some unrelated stderr line');
+      callGuard(cli, 'context limit approaching');
+
+      expect(hits).toHaveLength(0);
+    });
+  });
 });
 
 describe('StatusLineData interface', () => {
