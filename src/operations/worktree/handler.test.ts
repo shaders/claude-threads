@@ -163,7 +163,7 @@ function createMockOptions() {
     startTyping: mock(() => {}),
     stopTyping: mock(() => {}),
     offerContextPrompt: mock(() => Promise.resolve(false)),
-    buildMessageContent: mock((text: string) => Promise.resolve(text)),
+    buildMessageContent: mock((text: string) => Promise.resolve({ content: text, skipped: [] })),
     // Context preservation functions (injected to avoid mock.module interference)
     generateWorkSummary: mockGenerateWorkSummary,
     getThreadMessagesForContext: mockGetThreadMessagesForContext,

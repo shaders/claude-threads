@@ -7,8 +7,8 @@
 
 import type { Session } from '../../session/types.js';
 import type { ThreadMessage, PlatformFile } from '../../platform/index.js';
-import type { ContentBlock } from '../../claude/cli.js';
 import type { PendingContextPrompt as ExecutorPendingContextPrompt, ContextPromptFile } from '../executors/types.js';
+import { postSkippedFilesFeedback, type BuiltMessageContent } from '../streaming/handler.js';
 import { NUMBER_EMOJIS, DENIAL_EMOJIS, getNumberEmojiIndex, isDenialEmoji } from '../../utils/emoji.js';
 import { withErrorHandling } from '../../utils/error-handler/index.js';
 import { updateLastMessage } from '../post-helpers/index.js';
@@ -371,7 +371,7 @@ export interface ContextPromptHandler {
   startTyping: (session: Session) => void;
   persistSession: (session: Session) => void;
   injectMetadataReminder: (message: string, session: Session) => string;
-  buildMessageContent: (text: string, session: Session, files?: PlatformFile[]) => Promise<string | ContentBlock[]>;
+  buildMessageContent: (text: string, session: Session, files?: PlatformFile[]) => Promise<BuiltMessageContent>;
 }
 
 /**
@@ -416,13 +416,16 @@ export async function handleContextPromptTimeout(
   const messageToSend = ctx.injectMetadataReminder(queuedPrompt, session);
 
   // Build content with files (images)
-  const content = await ctx.buildMessageContent(messageToSend, session, queuedFiles);
+  const { content, skipped } = await ctx.buildMessageContent(messageToSend, session, queuedFiles);
 
   // Send the message without context
   if (session.claude.isRunning()) {
     session.claude.sendMessage(content);
     ctx.startTyping(session);
   }
+
+  // Surface any skipped attachments to the user
+  await postSkippedFilesFeedback(session.platform, session.threadId, skipped);
 
   // Persist updated state
   ctx.persistSession(session);
@@ -460,11 +463,12 @@ export async function offerContextPrompt(
       sessionLog(session).debug(`🧵 Including work summary (no thread messages)`);
     }
     messageToSend = ctx.injectMetadataReminder(messageToSend, session);
-    const content = await ctx.buildMessageContent(messageToSend, session, queuedFiles);
+    const { content, skipped } = await ctx.buildMessageContent(messageToSend, session, queuedFiles);
     if (session.claude.isRunning()) {
       session.claude.sendMessage(content);
       ctx.startTyping(session);
     }
+    await postSkippedFilesFeedback(session.platform, session.threadId, skipped);
     return false;
   }
 
@@ -485,11 +489,12 @@ export async function offerContextPrompt(
 
     session.messageCount++;
     messageToSend = ctx.injectMetadataReminder(messageToSend, session);
-    const content = await ctx.buildMessageContent(messageToSend, session, queuedFiles);
+    const { content, skipped } = await ctx.buildMessageContent(messageToSend, session, queuedFiles);
     if (session.claude.isRunning()) {
       session.claude.sendMessage(content);
       ctx.startTyping(session);
     }
+    await postSkippedFilesFeedback(session.platform, session.threadId, skipped);
 
     sessionLog(session).debug(`🧵 Auto-included 1 message as context (thread starter)${previousWorkSummary ? ' + work summary' : ''}`);
 

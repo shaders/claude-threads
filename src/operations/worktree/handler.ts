@@ -22,8 +22,9 @@ import {
   writeWorktreeMetadata,
   isValidWorktreePath,
 } from '../../git/worktree.js';
-import type { ClaudeCliOptions, ClaudeEvent, ContentBlock } from '../../claude/cli.js';
+import type { ClaudeCliOptions, ClaudeEvent } from '../../claude/cli.js';
 import { ClaudeCli } from '../../claude/cli.js';
+import { postSkippedFilesFeedback, type BuiltMessageContent } from '../streaming/handler.js';
 import { randomUUID } from 'crypto';
 import { logAndNotify } from '../../utils/error-handler/index.js';
 import {
@@ -386,7 +387,7 @@ export async function createAndSwitchToWorktree(
     startTyping: (session: Session) => void;
     stopTyping: (session: Session) => void;
     offerContextPrompt: (session: Session, queuedPrompt: string, queuedFiles?: PlatformFile[], excludePostId?: string) => Promise<boolean>;
-    buildMessageContent: (text: string, session: Session, files?: PlatformFile[]) => Promise<string | ContentBlock[]>;
+    buildMessageContent: (text: string, session: Session, files?: PlatformFile[]) => Promise<BuiltMessageContent>;
     // Context preservation for mid-session worktree creation
     generateWorkSummary: (session: Session) => Promise<string | undefined>;
     getThreadMessagesForContext: (session: Session, limit: number, excludePostId?: string) => Promise<ThreadMessage[]>;
@@ -668,9 +669,10 @@ export async function createAndSwitchToWorktree(
 
         // Build and send the message
         session.messageCount++;
-        const content = await options.buildMessageContent(messageToSend, session, undefined);
+        const { content, skipped } = await options.buildMessageContent(messageToSend, session, undefined);
         session.claude.sendMessage(content);
         options.startTyping(session);
+        await postSkippedFilesFeedback(session.platform, session.threadId, skipped);
 
         sessionLog(session).debug(`🌿 Auto-included ${threadMessages.length} messages + work summary for mid-session worktree`);
       }

@@ -12,10 +12,11 @@
  */
 
 import type { Session } from '../../session/types.js';
-import type { ClaudeEvent, ContentBlock } from '../../claude/cli.js';
+import type { ClaudeEvent } from '../../claude/cli.js';
 import type { PlatformClient, PlatformFile } from '../../platform/index.js';
 import type { SessionStore } from '../../persistence/session-store.js';
 import type { SessionInfo } from '../../ui/types.js';
+import type { BuiltMessageContent } from '../streaming/handler.js';
 
 // =============================================================================
 // Configuration (read-only state)
@@ -111,12 +112,12 @@ export interface SessionOperations {
   /** Stop typing indicator for session */
   stopTyping(session: Session): void;
 
-  /** Build message content with optional file attachments */
+  /** Build message content with optional file attachments. Returns both content and skipped files. */
   buildMessageContent(
     text: string,
     platform: PlatformClient,
     files?: PlatformFile[]
-  ): Promise<string | ContentBlock[]>;
+  ): Promise<BuiltMessageContent>;
 
   // ---------------------------------------------------------------------------
   // Persistence

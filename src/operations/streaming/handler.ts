@@ -63,6 +63,7 @@ export const SUPPORTED_TEXT_TYPES = [
 /** Text file extensions (fallback when MIME type is generic) */
 export const TEXT_FILE_EXTENSIONS = [
   '.txt', '.md', '.markdown', '.json', '.csv', '.xml', '.yaml', '.yml',
+  '.har', '.log',
   '.js', '.ts', '.jsx', '.tsx', '.py', '.rb', '.go', '.rs', '.java',
   '.c', '.cpp', '.h', '.hpp', '.cs', '.php', '.swift', '.kt', '.scala',
   '.sh', '.bash', '.zsh', '.fish', '.ps1', '.bat', '.cmd',
@@ -822,9 +823,19 @@ export function getUnsupportedFileSuggestion(file: PlatformFile): string | undef
 // Message content building
 // ---------------------------------------------------------------------------
 
+/** Result of building message content for Claude. */
+export interface BuiltMessageContent {
+  /** Content to send to Claude (plain text or content blocks). */
+  content: string | ContentBlock[];
+  /** Files that could not be processed — callers should surface these to the user. */
+  skipped: SkippedFile[];
+}
+
 /**
  * Build message content for Claude, including files if present.
- * Returns either a string or an array of content blocks.
+ *
+ * Returns both the content and any skipped files so every caller surfaces the
+ * same warning uniformly — see postSkippedFilesFeedback().
  *
  * Supports:
  * - Images (JPEG, PNG, GIF, WebP)
@@ -838,12 +849,12 @@ export async function buildMessageContent(
   platform: PlatformClient,
   files?: PlatformFile[],
   debug: boolean = false
-): Promise<string | ContentBlock[]> {
+): Promise<BuiltMessageContent> {
   const result = await processFiles(platform, files, debug);
 
   // If no files were processed, return plain text
   if (result.blocks.length === 0) {
-    return text;
+    return { content: text, skipped: result.skipped };
   }
 
   // Add the text message at the end if present
@@ -854,7 +865,20 @@ export async function buildMessageContent(
     });
   }
 
-  return result.blocks;
+  return { content: result.blocks, skipped: result.skipped };
+}
+
+/**
+ * Post a skipped-files warning to the thread, if any.
+ * No-op when skipped is empty, so callers can invoke unconditionally.
+ */
+export async function postSkippedFilesFeedback(
+  platform: PlatformClient,
+  threadId: string,
+  skipped: SkippedFile[]
+): Promise<void> {
+  if (skipped.length === 0) return;
+  await platform.createPost(formatSkippedFilesFeedback(skipped), threadId);
 }
 
 /**
@@ -924,6 +948,21 @@ export async function processFiles(
   }
 
   return { blocks, skipped };
+}
+
+/**
+ * Format a user-facing feedback message for skipped files.
+ */
+export function formatSkippedFilesFeedback(skippedFiles: SkippedFile[]): string {
+  const lines = ['⚠️ **Some files could not be processed:**'];
+  for (const file of skippedFiles) {
+    let line = `- **${file.name}**: ${file.reason}`;
+    if (file.suggestion) {
+      line += ` _(${file.suggestion})_`;
+    }
+    lines.push(line);
+  }
+  return lines.join('\n');
 }
 
 // ---------------------------------------------------------------------------
