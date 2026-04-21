@@ -72,6 +72,33 @@ platforms:
 | `allowedUsers` | No | List of Slack usernames |
 | `skipPermissions` | No | Auto-approve actions (default: `false`) |
 
+## Claude Accounts (optional, multi-account mode)
+
+By default every session spawns `claude` with the bot's own `process.env`, so they all share one subscription's token budget. Add a `claudeAccounts` block to spread load across multiple accounts — the bot round-robins new sessions across the pool and automatically skips accounts in rate-limit cooldown. Omit the block entirely to stay in single-account mode (unchanged behavior).
+
+```yaml
+claudeAccounts:
+  # OAuth accounts — prepare each HOME first with `HOME=<path> claude login`
+  - id: primary
+    home: /home/bot/.claude-accounts/primary
+  - id: backup
+    displayName: Backup (Pro)
+    home: /home/bot/.claude-accounts/backup
+
+  # API-key billed
+  - id: shared-api
+    apiKey: sk-ant-api03-xxxxxxxx...
+```
+
+| Setting | Required | Description |
+|---------|----------|-------------|
+| `id` | Yes | Stable identifier used in logs, UI, and persisted session state |
+| `home` | One of | Alternate `$HOME` containing `.claude/.credentials.json` from a prior `HOME=<path> claude login`. For OAuth Pro/Max subscriptions. Session history also lives here, so resumed sessions pick the same account. |
+| `apiKey` | One of | Anthropic API key. Billed against that key; session history stays under the bot's default `HOME`. |
+| `displayName` | No | Human-readable label in UI (defaults to `id`) |
+
+Exactly one of `home` or `apiKey` should be set per account. Persisted sessions record which account they ran under and resume on the same one.
+
 ## Environment Variables
 
 | Variable | Description | Default |

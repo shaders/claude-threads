@@ -34,6 +34,7 @@
 - **Git worktrees** - Isolate changes in separate branches
 - **File attachments** - Attach images, PDFs, and files for Claude to analyze
 - **Chrome automation** - Control Chrome browser for web tasks
+- **Multi-account Claude (opt-in)** - Round-robin sessions across multiple Claude subscriptions or API keys with automatic rate-limit cooldown — see [Configuration](docs/CONFIGURATION.md#claude-accounts-optional-multi-account-mode)
 
 ## Quick Start
 
