@@ -158,6 +158,11 @@ function createSessionContext(): SessionContext {
       forceUpdate: mock(async () => {}),
       deferUpdate: mock(() => {}),
       handleBugReportApproval: mock(async () => {}),
+      acquireClaudeAccount: mock(() => null),
+      getClaudeAccount: mock(() => undefined),
+      releaseClaudeAccount: mock(() => {}),
+      markClaudeAccountCooling: mock(() => {}),
+      getClaudeAccountPoolStatus: mock(() => []),
     },
   };
 }

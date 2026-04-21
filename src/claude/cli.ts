@@ -8,8 +8,13 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { createLogger } from '../utils/logger.js';
 import { getClaudePath } from './version-check.js';
+import { detectRateLimit } from './rate-limit-detector.js';
 
 const log = createLogger('claude');
+
+// Re-export so consumers (SessionManager) can import without digging into
+// the detector module directly.
+export type { RateLimitHit } from './rate-limit-detector.js';
 
 /**
  * Clean up stale Claude browser bridge socket files.
@@ -122,6 +127,37 @@ export interface ClaudeCliOptions {
   appendSystemPrompt?: string;  // Additional system prompt to append
   logSessionId?: string;  // Session ID for log routing (platformId:threadId)
   permissionTimeoutMs?: number;  // Timeout for permission approval (default: 120000)
+  /**
+   * Optional Claude account to spawn under. When set, `HOME` (for OAuth) or
+   * `ANTHROPIC_API_KEY` (for API-billed) in the child env is overridden so
+   * Claude uses that account's credentials. When omitted, the child inherits
+   * `process.env` — single-account mode, identical to prior behavior.
+   */
+  account?: ClaudeCliAccount;
+}
+
+/** Minimal subset of ClaudeAccount that `ClaudeCli` needs. */
+export interface ClaudeCliAccount {
+  id: string;
+  home?: string;
+  apiKey?: string;
+}
+
+/**
+ * True when a Claude `result` event carries an error payload. Gates the
+ * rate-limit scanner so assistant text in successful turns (which can legally
+ * contain phrases like "rate_limit_error" when the user asks about them) can't
+ * poison the account cooldown logic.
+ *
+ * Error subtypes from Claude CLI include `error_during_execution`,
+ * `error_max_turns`, and other `error_*` values. Payloads that set
+ * `is_error: true` are also treated as errors.
+ */
+function isErrorResultEvent(event: ClaudeEvent): boolean {
+  const ev = event as { subtype?: unknown; is_error?: unknown };
+  if (typeof ev.subtype === 'string' && ev.subtype.startsWith('error')) return true;
+  if (ev.is_error === true) return true;
+  return false;
 }
 
 export class ClaudeCli extends EventEmitter {
@@ -132,6 +168,7 @@ export class ClaudeCli extends EventEmitter {
   private statusFilePath: string | null = null;
   private lastStatusData: StatusLineData | null = null;
   private stderrBuffer = '';  // Capture stderr for error detection
+  private rateLimitEmitted = false;  // Fire 'rate-limit' only once per process
   private log: ReturnType<typeof createLogger>;  // Session-scoped logger
 
   constructor(options: ClaudeCliOptions) {
@@ -213,8 +250,9 @@ export class ClaudeCli extends EventEmitter {
   start(): void {
     if (this.process) throw new Error('Already running');
 
-    // Clear stderr buffer from any previous run
+    // Clear stderr buffer and rate-limit dedupe flag from any previous run
     this.stderrBuffer = '';
+    this.rateLimitEmitted = false;
 
     // Clean up stale browser bridge sockets (workaround for Claude CLI bug)
     cleanupBrowserBridgeSockets();
@@ -305,9 +343,17 @@ export class ClaudeCli extends EventEmitter {
 
     this.log.debug(`Starting: ${claudePath} ${args.slice(0, 5).join(' ')}...`);
 
+    // Build child env. When an account is configured, override HOME (OAuth) or
+    // ANTHROPIC_API_KEY (API) so Claude reads different credentials per session.
+    // No account → inherit process.env unchanged (single-account mode).
+    const childEnv = this.buildChildEnv();
+    if (this.options.account) {
+      this.log.debug(`Spawning under Claude account "${this.options.account.id}"`);
+    }
+
     this.process = crossSpawn(claudePath, args, {
       cwd: this.options.workingDir,
-      env: process.env,
+      env: childEnv,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
@@ -325,6 +371,7 @@ export class ClaudeCli extends EventEmitter {
         this.stderrBuffer = this.stderrBuffer.slice(-10240);
       }
       this.log.debug(`stderr: ${text.trim()}`);
+      this.maybeEmitRateLimit(text);
     });
 
     this.process.on('error', (err) => {
@@ -388,10 +435,37 @@ export class ClaudeCli extends EventEmitter {
         const event = JSON.parse(trimmed) as ClaudeEvent;
         // Note: Event details are logged in events.ts handleEvent with session context
         this.emit('event', event);
+        // Scan for rate-limit only on error-flavored result events. `success`
+        // results contain the assistant's final answer text, which could easily
+        // include phrases like "rate_limit_error" if the user asked about them
+        // — scanning those would cool the account down on a normal reply.
+        // Error subtypes (e.g. "error_during_execution", "error_max_turns") and
+        // any event carrying `is_error: true` are the narrow set we trust.
+        if (event.type === 'result' && isErrorResultEvent(event)) {
+          this.maybeEmitRateLimit(trimmed);
+        }
       } catch {
         // Ignore unparseable lines (usually partial JSON from streaming)
       }
     }
+  }
+
+  /**
+   * Scan a stderr chunk or result-event body for rate-limit signals and, on a
+   * hit, emit a single `'rate-limit'` event with the parsed hit.
+   *
+   * We guard against re-emitting on every subsequent stderr tick by keeping
+   * a small cursor: callers (SessionManager) will typically already have put
+   * the account into cooldown, so duplicate emits are harmless — but cheap to
+   * avoid.
+   */
+  private maybeEmitRateLimit(text: string): void {
+    const hit = detectRateLimit(text);
+    if (!hit.detected) return;
+    if (this.rateLimitEmitted) return;
+    this.rateLimitEmitted = true;
+    this.log.warn(`Rate limit detected: ${hit.matched ?? '(no match text)'}`);
+    this.emit('rate-limit', hit);
   }
 
   isRunning(): boolean {
@@ -508,6 +582,48 @@ export class ClaudeCli extends EventEmitter {
     this.log.debug(`Interrupting Claude process (pid=${this.process.pid})`);
     this.process.kill('SIGINT');
     return true;
+  }
+
+  /**
+   * Build the env object for the spawned Claude process.
+   *
+   * Without `options.account` we pass `process.env` through unchanged so
+   * existing single-account users see no difference. With an account:
+   * - `home` set → override `HOME` (and `USERPROFILE` on Windows). Claude
+   *   reads `.credentials.json`, `.claude/projects/*`, and MCP config from
+   *   this directory, so the child session runs fully under that account's
+   *   OAuth state.
+   * - `apiKey` set → override `ANTHROPIC_API_KEY`. Claude keeps using the
+   *   outer HOME for history and MCP, but billing goes to this key. We also
+   *   clear the outer OAuth token (`CLAUDE_CODE_OAUTH_TOKEN`) so the API key
+   *   wins even if both are present.
+   *
+   * Exposed as a separate method to keep `start()` readable and to make the
+   * env-assembly logic straightforward to audit.
+   */
+  private buildChildEnv(): NodeJS.ProcessEnv {
+    const account = this.options.account;
+    if (!account) return process.env;
+
+    const env: NodeJS.ProcessEnv = { ...process.env };
+
+    if (account.home) {
+      env.HOME = account.home;
+      env.USERPROFILE = account.home;
+      // OAuth lives under HOME, so clear env vars that would otherwise beat
+      // the file-based credentials we're pointing at: an inherited API key
+      // (ANTHROPIC_API_KEY) or an inherited OAuth token
+      // (CLAUDE_CODE_OAUTH_TOKEN) from the bot's own parent env would both
+      // silently swap the account we thought we were using.
+      delete env.ANTHROPIC_API_KEY;
+      delete env.CLAUDE_CODE_OAUTH_TOKEN;
+    } else if (account.apiKey) {
+      env.ANTHROPIC_API_KEY = account.apiKey;
+      // Clear an inherited OAuth token so API key billing wins.
+      delete env.CLAUDE_CODE_OAUTH_TOKEN;
+    }
+
+    return env;
   }
 
   private getMcpServerPath(): string {

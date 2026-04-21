@@ -15,8 +15,9 @@ import {
 } from './types.js';
 import { clearAllTimers } from './timer-manager.js';
 import type { PlatformClient, PlatformFile } from '../platform/index.js';
-import type { ClaudeCliOptions, ClaudeEvent } from '../claude/cli.js';
+import type { ClaudeCliOptions, ClaudeEvent, RateLimitHit } from '../claude/cli.js';
 import { ClaudeCli } from '../claude/cli.js';
+import { cooldownDeadline } from '../claude/rate-limit-detector.js';
 import type { PersistedSession } from '../persistence/session-store.js';
 import { createThreadLogger } from '../persistence/thread-logger.js';
 import { VERSION } from '../version.js';
@@ -159,6 +160,22 @@ async function cleanupSession(
     cleanupPostIndex(ctx, session.threadId);
   }
   keepAlive.sessionEnded();
+  releaseAccountIfHeld(session, ctx);
+}
+
+/**
+ * Release the session's Claude account slot, if one was acquired. Safe to call
+ * on every exit path — no-op in single-account mode or if the session never
+ * held an account. This is the one-place rule that keeps pool accounting
+ * honest across the many early-exit / failure branches.
+ */
+function releaseAccountIfHeld(session: Session, ctx: SessionContext): void {
+  if (session.claudeAccountId) {
+    ctx.ops.releaseClaudeAccount(session.claudeAccountId);
+    // Guard against double-release: once released, stop tracking the id on
+    // the session so a later cleanup path can't decrement again.
+    session.claudeAccountId = undefined;
+  }
 }
 
 /**
@@ -176,6 +193,38 @@ function removeFromRegistry(session: Session, ctx: SessionContext): void {
   mutableSessions(ctx).delete(session.sessionId);
   cleanupPostIndex(ctx, session.threadId);
   keepAlive.sessionEnded();
+  releaseAccountIfHeld(session, ctx);
+}
+
+/**
+ * React to a rate-limit signal from Claude CLI.
+ *
+ * Puts the current account into cooldown so future `acquire()` calls route new
+ * sessions to other accounts. Posts a heads-up in the session thread. The
+ * session itself is not killed here — Claude CLI will surface the error in its
+ * own output and the user can decide (wait, use another session, etc.).
+ *
+ * Exported so that all code paths that rebind Claude listeners (startSession,
+ * resumeSession, and the `restartClaudeSession` helper used by !cd /
+ * !permissions) share the same handler and can't accidentally drop it.
+ */
+export function handleRateLimit(session: Session, hit: RateLimitHit, ctx: SessionContext): void {
+  if (!session.claudeAccountId) {
+    sessionLog(session).warn(`Rate limit hit in single-account mode — cannot reroute`);
+    return;
+  }
+  const deadline = cooldownDeadline(hit);
+  ctx.ops.markClaudeAccountCooling(session.claudeAccountId, deadline);
+  const minutes = Math.max(1, Math.ceil((deadline - Date.now()) / 60_000));
+  sessionLog(session).warn(
+    `Rate limit on account "${session.claudeAccountId}" — cooling for ~${minutes}min`
+  );
+  void post(
+    session,
+    'warning',
+    `⚠️ Claude account \`${session.claudeAccountId}\` hit a rate limit. ` +
+      `New sessions will use another account until it resets (~${minutes}min).`
+  );
 }
 
 /**
@@ -766,6 +815,12 @@ export async function startSession(
   // Create Claude CLI with options
   const platformMcpConfig = platform.getMcpConfig();
 
+  // Reserve a Claude account from the pool (null = single-account mode)
+  const claudeAccount = ctx.ops.acquireClaudeAccount();
+  if (claudeAccount) {
+    log.info(`Session ${sessionId.substring(0, 20)} reserved Claude account "${claudeAccount.id}"`);
+  }
+
   const cliOptions: ClaudeCliOptions = {
     workingDir,
     threadId: actualThreadId,
@@ -777,6 +832,9 @@ export async function startSession(
     appendSystemPrompt: systemPrompt,
     logSessionId: sessionId,  // Route logs to session panel
     permissionTimeoutMs: ctx.config.permissionTimeoutMs,
+    account: claudeAccount
+      ? { id: claudeAccount.id, home: claudeAccount.home, apiKey: claudeAccount.apiKey }
+      : undefined,
   };
   const claude = new ClaudeCli(cliOptions);
 
@@ -787,6 +845,7 @@ export async function startSession(
     sessionId,
     platform,
     claudeSessionId,
+    claudeAccountId: claudeAccount?.id,
     startedBy: username,
     startedByDisplayName: displayName,
     startedAt: new Date(),
@@ -846,6 +905,7 @@ export async function startSession(
   // Bind event handlers (use sessionId which is the composite key)
   claude.on('event', (e: ClaudeEvent) => ctx.ops.handleEvent(sessionId, e));
   claude.on('exit', (code: number) => ctx.ops.handleExit(sessionId, code));
+  claude.on('rate-limit', (hit: RateLimitHit) => handleRateLimit(session, hit, ctx));
 
   try {
     claude.start();
@@ -854,6 +914,7 @@ export async function startSession(
     ctx.ops.stopTyping(session);
     ctx.ops.emitSessionRemove(session.sessionId);
     mutableSessions(ctx).delete(session.sessionId);
+    releaseAccountIfHeld(session, ctx);
     await ctx.ops.updateStickyMessage();
     return;
   }
@@ -978,6 +1039,17 @@ export async function resumeSession(
   const sessionContext = buildSessionContext(platform, state.workingDir);
   const appendSystemPrompt = `${sessionContext}\n\n${CHAT_PLATFORM_PROMPT}`;
 
+  // Resume MUST re-use the same Claude account the session started on —
+  // for OAuth accounts the conversation history lives under that HOME.
+  // acquireClaudeAccount honors preferredId even if it is currently cooling.
+  const claudeAccount = ctx.ops.acquireClaudeAccount(state.claudeAccountId);
+  if (state.claudeAccountId && !claudeAccount) {
+    log.warn(
+      `Persisted session referenced Claude account "${state.claudeAccountId}" ` +
+      `which is no longer configured — resuming under default env`
+    );
+  }
+
   const cliOptions: ClaudeCliOptions = {
     workingDir: state.workingDir,
     threadId: state.threadId,
@@ -989,6 +1061,9 @@ export async function resumeSession(
     appendSystemPrompt,
     logSessionId: sessionId,  // Route logs to session panel
     permissionTimeoutMs: ctx.config.permissionTimeoutMs,
+    account: claudeAccount
+      ? { id: claudeAccount.id, home: claudeAccount.home, apiKey: claudeAccount.apiKey }
+      : undefined,
   };
   const claude = new ClaudeCli(cliOptions);
 
@@ -999,6 +1074,7 @@ export async function resumeSession(
     sessionId,
     platform,
     claudeSessionId: state.claudeSessionId,
+    claudeAccountId: claudeAccount?.id,
     startedBy: state.startedBy,
     startedByDisplayName: state.startedByDisplayName,
     startedAt: new Date(state.startedAt),
@@ -1118,6 +1194,7 @@ export async function resumeSession(
   // Bind event handlers (use sessionId which is the composite key)
   claude.on('event', (e: ClaudeEvent) => ctx.ops.handleEvent(sessionId, e));
   claude.on('exit', (code: number) => ctx.ops.handleExit(sessionId, code));
+  claude.on('rate-limit', (hit: RateLimitHit) => handleRateLimit(session, hit, ctx));
 
   try {
     claude.start();
@@ -1156,6 +1233,7 @@ export async function resumeSession(
     ctx.ops.emitSessionRemove(sessionId);
     mutableSessions(ctx).delete(sessionId);
     ctx.state.sessionStore.remove(sessionId);
+    releaseAccountIfHeld(session, ctx);
 
     // Try to notify user
     const failFormatter = session.platform.getFormatter();

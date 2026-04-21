@@ -465,7 +465,8 @@ async function startWithoutDaemon() {
     undefined,  // sessionsPath - use default
     threadLogsEnabled,
     threadLogsRetentionDays,
-    config.limits  // Resource limits (optional, has sensible defaults)
+    config.limits,  // Resource limits (optional, has sensible defaults)
+    config.claudeAccounts  // Claude account pool (undefined = single-account mode)
   );
 
   // Set sticky message customization from config

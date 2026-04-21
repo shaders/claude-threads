@@ -249,6 +249,10 @@ export interface Session {
   // Claude process
   claude: ClaudeCli;
 
+  // Claude account id the session is running under (when the bot is configured
+  // with a `claudeAccounts` pool). Undefined in single-account mode.
+  claudeAccountId?: string;
+
   // Interactive state (collaboration - not Claude events)
   planApproved: boolean;
 

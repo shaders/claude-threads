@@ -12,6 +12,7 @@ import type { PlatformClient, PlatformFormatter } from '../../platform/index.js'
 import { getPlatformIcon } from '../../platform/utils.js';
 import type { SessionStore, PersistedSession } from '../../persistence/session-store.js';
 import type { WorktreeMode } from '../../config.js';
+import type { AccountPoolStatus } from '../../claude/account-pool.js';
 import { formatBatteryStatus } from '../../utils/battery.js';
 import { formatUptime } from '../../utils/uptime.js';
 import { formatRelativeTimeShort, formatShortId, formatVersionString } from '../../utils/format.js';
@@ -159,6 +160,11 @@ export interface StickyMessageConfig {
   description?: string;
   /** Custom footer content appended before the default footer */
   footer?: string;
+  /**
+   * Claude account pool snapshot. Undefined means single-account mode; the
+   * sticky skips the account summary entirely in that case.
+   */
+  accountPoolStatus?: AccountPoolStatus[];
 }
 
 // Store sticky post IDs per platform (in-memory cache)
@@ -411,6 +417,17 @@ async function buildStatusBar(
 
   // Session count
   items.push(formatter.formatCode(`${sessionCount}/${config.maxSessions} sessions`));
+
+  // Claude account pool summary (only when pool is configured)
+  if (config.accountPoolStatus && config.accountPoolStatus.length > 0) {
+    const total = config.accountPoolStatus.length;
+    const cooling = config.accountPoolStatus.filter((a) => a.coolingUntil !== null).length;
+    const available = total - cooling;
+    const label = cooling > 0
+      ? `🔑 ${available}/${total} accounts (${cooling} cooling)`
+      : `🔑 ${total} account${total === 1 ? '' : 's'}`;
+    items.push(formatter.formatCode(label));
+  }
 
   // Permission mode
   const permMode = config.skipPermissions ? '⚡ Auto' : '🔐 Interactive';
