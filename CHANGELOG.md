@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.1] - 2026-04-21
+
+### Fixed
+- **`maxSessions` cap could be exceeded under concurrent session starts** — `startSession()` passed the cap check synchronously but then awaited `createPost()` before committing the session to the map, so concurrent starts all read the same stale count and over-admitted. The integration test `"should reject new session when at capacity"` flaked at ~40% for weeks because of this. Pending starts are now tracked alongside committed sessions in the cap check. (#331)
+- **Reject Claude accounts with both `home` and `apiKey` set** — the two are documented as mutually exclusive, but `AccountPool` silently preferred `home` when both were configured. Now the account is dropped with a warning so misconfiguration surfaces. (#330, thanks @shaders)
+- **Tighten `reset_at` epoch regex in rate-limit detection** — the old pattern matched `"preset": N` and (more importantly) `reset_after=N`, a *relative* retry-after hint that would have been misread as an absolute epoch and pushed cooldown decades into the future. Added word-boundary anchors and regression tests. (#330)
+- **Rate-limit emit guard now allows deadline extensions** — the boolean latch in `ClaudeCli` fired at most once per process, so a second rate-limit hit with a longer reset time couldn't widen `AccountPool.markCooling`'s extend-only window. Replaced with a numeric last-deadline tracker: repeat hits at the same severity still dedupe, but a later deadline re-emits. (#330)
+
 ## [1.7.0] - 2026-04-21
 
 ### Added
