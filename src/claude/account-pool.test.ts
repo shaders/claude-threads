@@ -30,6 +30,22 @@ describe('AccountPool', () => {
       expect(pool.get('valid')).toBeDefined();
       expect(pool.get('api')).toBeDefined();
     });
+
+    it('drops accounts that have BOTH home and apiKey (mutually exclusive)', () => {
+      // home/apiKey are documented as mutually exclusive: `home` routes via
+      // OAuth, `apiKey` via API billing. Silently preferring one (as the old
+      // behavior did) hides misconfiguration; the pool should reject the
+      // account outright so the operator notices.
+      const pool = new AccountPool([
+        { id: 'oauth', home: '/tmp/a' },
+        { id: 'dual', home: '/tmp/b', apiKey: 'sk-ant-xxx' }, // invalid
+        { id: 'api', apiKey: 'sk-ant-yyy' },
+      ]);
+      expect(pool.size).toBe(2);
+      expect(pool.get('dual')).toBeUndefined();
+      expect(pool.get('oauth')).toBeDefined();
+      expect(pool.get('api')).toBeDefined();
+    });
   });
 
   describe('acquire / round-robin', () => {
