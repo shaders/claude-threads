@@ -141,7 +141,7 @@ function createSessionContext(): SessionContext {
       persistSession: mock((_session: Session) => {}),
       updateSessionHeader: mock(async (_session: Session) => {}),
       unpersistSession: mock((_sessionId: string) => {}),
-      buildMessageContent: mock(async (text: string) => text),
+      buildMessageContent: mock(async (text: string) => ({ content: text, skipped: [] })),
       handleEvent: mock((_sessionId: string, _event: any) => {}),
       handleExit: mock(async (_sessionId: string, _code: number) => {}),
       killSession: mock(async (_threadId: string) => {}),

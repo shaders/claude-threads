@@ -37,7 +37,7 @@ import {
   formatContextForClaude,
 } from '../operations/context-prompt/index.js';
 import { formatSideConversationsForClaude } from '../operations/side-conversation/index.js';
-import { processFiles, formatSkippedFilesFeedback } from '../operations/streaming/handler.js';
+import { postSkippedFilesFeedback } from '../operations/streaming/handler.js';
 import { detectWorktreeInfo } from '../git/worktree.js';
 
 const log = createLogger('lifecycle');
@@ -311,7 +311,7 @@ function createMessageManager(
     // Note: queuedFiles from MessageManager are simplified refs (id, name)
     // For now, send without files - the full PlatformFile[] would need to be
     // stored separately if file support is needed here
-    const content = await ctx.ops.buildMessageContent(messageToSend, session.platform, undefined);
+    const { content } = await ctx.ops.buildMessageContent(messageToSend, session.platform, undefined);
 
     // Send the message to Claude
     if (session.claude.isRunning()) {
@@ -872,7 +872,7 @@ export async function startSession(
   }
 
   // Build message content
-  const content = await ctx.ops.buildMessageContent(options.prompt, session.platform, options.files);
+  const { content, skipped } = await ctx.ops.buildMessageContent(options.prompt, session.platform, options.files);
   const messageText = typeof content === 'string' ? content : options.prompt;
 
   // Check if this is a mid-thread start (replyToPostId means we're replying in an existing thread)
@@ -884,6 +884,8 @@ export async function startSession(
     const contextOffered = await ctx.ops.offerContextPrompt(session, messageText, options.files, excludePostId);
     if (contextOffered) {
       // Context prompt was posted, message is queued
+      // Surface skipped-file warnings before returning so the user sees them early
+      await postSkippedFilesFeedback(session.platform, actualThreadId, skipped);
       // Don't persist yet - offerContextPrompt handles that
       return;
     }
@@ -895,13 +897,8 @@ export async function startSession(
   // Send the message to Claude (no context prompt, or no previous messages)
   claude.sendMessage(content);
 
-  // Post feedback for any files that were silently skipped during buildMessageContent
-  if (options.files && options.files.length > 0) {
-    const { skipped } = await processFiles(session.platform, options.files);
-    if (skipped.length > 0) {
-      await session.platform.createPost(formatSkippedFilesFeedback(skipped), actualThreadId);
-    }
-  }
+  // Surface any skipped attachments to the user
+  await postSkippedFilesFeedback(session.platform, actualThreadId, skipped);
 
   // NOTE: We don't persist here. We wait for Claude to actually respond before persisting.
   // This prevents persisting sessions where Claude dies before saving its conversation,
@@ -1201,10 +1198,9 @@ export async function sendFollowUp(
     // Prepare for message (flush, reset) but don't send yet
     await session.messageManager?.prepareForUserMessage();
 
-    const content = await ctx.ops.buildMessageContent(message, session.platform, files);
-    const messageText = typeof content === 'string' ? content : message;
-
-    const contextOffered = await ctx.ops.offerContextPrompt(session, messageText, files);
+    // offerContextPrompt processes files itself and surfaces skipped-file warnings.
+    // We pass the raw text — file content is attached downstream when Claude is sent to.
+    const contextOffered = await ctx.ops.offerContextPrompt(session, message, files);
     if (contextOffered) {
       // Context prompt was posted, message is queued - don't send directly
       session.lastActivityAt = new Date();

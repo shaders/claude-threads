@@ -41,6 +41,7 @@ import {
   // Main functions
   buildMessageContent,
   processFiles,
+  postSkippedFilesFeedback,
 } from '../../src/operations/streaming/handler.js';
 import type { PlatformFile, PlatformClient } from '../../src/platform/index.js';
 
@@ -825,31 +826,33 @@ describe('processFiles', () => {
 describe('buildMessageContent', () => {
   it('returns plain text when no files provided', async () => {
     const platform = createMockPlatform();
-    const result = await buildMessageContent('Hello, world!', platform, undefined);
+    const { content, skipped } = await buildMessageContent('Hello, world!', platform, undefined);
 
-    expect(result).toBe('Hello, world!');
+    expect(content).toBe('Hello, world!');
+    expect(skipped).toEqual([]);
   });
 
   it('returns plain text when files array is empty', async () => {
     const platform = createMockPlatform();
-    const result = await buildMessageContent('Hello, world!', platform, []);
+    const { content, skipped } = await buildMessageContent('Hello, world!', platform, []);
 
-    expect(result).toBe('Hello, world!');
+    expect(content).toBe('Hello, world!');
+    expect(skipped).toEqual([]);
   });
 
   it('returns content blocks when files are provided', async () => {
     const platform = createMockPlatform();
     const files = [createMockFile({ mimeType: 'image/jpeg', name: 'photo.jpg' })];
 
-    const result = await buildMessageContent('Check this image', platform, files);
+    const { content } = await buildMessageContent('Check this image', platform, files);
 
-    expect(Array.isArray(result)).toBe(true);
-    if (Array.isArray(result)) {
-      expect(result).toHaveLength(2); // image + text
-      expect(result[0].type).toBe('image');
-      expect(result[1].type).toBe('text');
-      if (result[1].type === 'text') {
-        expect(result[1].text).toBe('Check this image');
+    expect(Array.isArray(content)).toBe(true);
+    if (Array.isArray(content)) {
+      expect(content).toHaveLength(2); // image + text
+      expect(content[0].type).toBe('image');
+      expect(content[1].type).toBe('text');
+      if (content[1].type === 'text') {
+        expect(content[1].text).toBe('Check this image');
       }
     }
   });
@@ -861,12 +864,12 @@ describe('buildMessageContent', () => {
       createMockFile({ id: '2', mimeType: 'image/png', name: 'photo2.png' }),
     ];
 
-    const result = await buildMessageContent('Two images!', platform, files);
+    const { content } = await buildMessageContent('Two images!', platform, files);
 
-    expect(Array.isArray(result)).toBe(true);
-    if (Array.isArray(result)) {
-      expect(result).toHaveLength(3); // 2 images + text
-      expect(result[result.length - 1].type).toBe('text');
+    expect(Array.isArray(content)).toBe(true);
+    if (Array.isArray(content)) {
+      expect(content).toHaveLength(3); // 2 images + text
+      expect(content[content.length - 1].type).toBe('text');
     }
   });
 
@@ -874,22 +877,59 @@ describe('buildMessageContent', () => {
     const platform = createMockPlatform();
     const files = [createMockFile({ mimeType: 'image/jpeg', name: 'photo.jpg' })];
 
-    const result = await buildMessageContent('', platform, files);
+    const { content } = await buildMessageContent('', platform, files);
 
-    expect(Array.isArray(result)).toBe(true);
-    if (Array.isArray(result)) {
-      expect(result).toHaveLength(1); // just the image
-      expect(result[0].type).toBe('image');
+    expect(Array.isArray(content)).toBe(true);
+    if (Array.isArray(content)) {
+      expect(content).toHaveLength(1); // just the image
+      expect(content[0].type).toBe('image');
     }
   });
 
-  it('returns plain text when all files are skipped', async () => {
+  it('surfaces skipped files alongside content when all are unsupported', async () => {
     const platform = createMockPlatform();
     const files = [createMockFile({ mimeType: 'application/msword', name: 'doc.doc' })];
 
-    const result = await buildMessageContent('Message with unsupported file', platform, files);
+    const { content, skipped } = await buildMessageContent('Message with unsupported file', platform, files);
 
-    // When all files are skipped, we get plain text back
-    expect(result).toBe('Message with unsupported file');
+    // When all files are skipped, content is plain text — but skipped is populated
+    expect(content).toBe('Message with unsupported file');
+    expect(skipped).toHaveLength(1);
+    expect(skipped[0].name).toBe('doc.doc');
+    expect(skipped[0].reason).toContain('Unsupported');
+  });
+});
+
+// =============================================================================
+// postSkippedFilesFeedback Tests
+// =============================================================================
+
+describe('postSkippedFilesFeedback', () => {
+  it('is a no-op when skipped is empty', async () => {
+    const platform = createMockPlatform();
+
+    await postSkippedFilesFeedback(platform, 'thread-1', []);
+
+    expect(platform.createPost).not.toHaveBeenCalled();
+  });
+
+  it('posts a warning with file names and reasons when skipped is non-empty', async () => {
+    const platform = createMockPlatform();
+
+    await postSkippedFilesFeedback(platform, 'thread-1', [
+      { name: 'bad.doc', reason: 'Unsupported file type: application/msword', suggestion: 'Export as PDF' },
+      { name: 'huge.pdf', reason: 'PDF exceeds 32MB limit (64MB)' },
+    ]);
+
+    expect(platform.createPost).toHaveBeenCalledTimes(1);
+    const [body, threadId] = (platform.createPost as ReturnType<typeof mock>).mock.calls[0];
+    expect(threadId).toBe('thread-1');
+    expect(body).toContain('⚠️');
+    expect(body).toContain('Some files could not be processed');
+    expect(body).toContain('bad.doc');
+    expect(body).toContain('Unsupported file type: application/msword');
+    expect(body).toContain('Export as PDF');
+    expect(body).toContain('huge.pdf');
+    expect(body).toContain('PDF exceeds 32MB limit');
   });
 });

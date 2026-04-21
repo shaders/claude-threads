@@ -61,7 +61,7 @@ import {
 } from './types.js';
 import { createLogger } from '../utils/logger.js';
 import { TypedEventEmitter, createMessageManagerEvents } from './message-manager-events.js';
-import { processFiles, formatSkippedFilesFeedback, type SkippedFile } from './streaming/handler.js';
+import { postSkippedFilesFeedback, type BuiltMessageContent, type SkippedFile } from './streaming/handler.js';
 
 const log = createLogger('msg-mgr');
 
@@ -72,7 +72,7 @@ export type BuildMessageContentCallback = (
   text: string,
   platform: PlatformClient,
   files?: PlatformFile[]
-) => Promise<string | ContentBlock[]>;
+) => Promise<BuiltMessageContent>;
 
 /**
  * Callback to start typing indicator
@@ -1038,27 +1038,21 @@ export class MessageManager {
     // Prepare for the new message (flush, reset, bump tasks)
     await this.prepareForUserMessage();
 
-    // Process files to check for skipped files (for user feedback)
-    let skippedFiles: SkippedFile[] = [];
-    if (files && files.length > 0) {
-      const fileResult = await processFiles(this.platform, files);
-      skippedFiles = fileResult.skipped;
-    }
-
-    // Build message content (with files if provided)
+    // Build message content (with files if provided). buildMessageContent processes
+    // files once and returns both content and any files it had to skip.
     let content: string | ContentBlock[] = message;
+    let skippedFiles: SkippedFile[] = [];
     if (this.buildMessageContentCallback) {
-      content = await this.buildMessageContentCallback(message, this.platform, files);
+      const built = await this.buildMessageContentCallback(message, this.platform, files);
+      content = built.content;
+      skippedFiles = built.skipped;
     }
 
     // Send to Claude
     this.session.claude.sendMessage(content);
 
     // Post feedback for skipped files
-    if (skippedFiles.length > 0) {
-      const feedback = formatSkippedFilesFeedback(skippedFiles);
-      await this.platform.createPost(feedback, this.threadId);
-    }
+    await postSkippedFilesFeedback(this.platform, this.threadId, skippedFiles);
 
     // Update activity time
     this.session.lastActivityAt = new Date();
