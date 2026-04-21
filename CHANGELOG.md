@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.3] - 2026-04-21
+
+### Fixed
+- **Skipped file attachments are now surfaced on session start** - When a user starts a session with an unsupported file (e.g. `.xlsx`), the bot posts the `⚠️ Some files could not be processed` warning instead of silently dropping it. The same warning now fires on the mid-thread context-prompt and worktree paths. (#325, thanks @shaders)
+- **Recognize `.har` and `.log` as text** - Both extensions come through as `application/octet-stream` via Mattermost/Slack and were previously dropped as unsupported. (#325)
+
 ## [1.6.2] - 2026-04-20
 
 ### Fixed
