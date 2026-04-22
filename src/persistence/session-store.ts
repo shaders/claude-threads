@@ -429,6 +429,32 @@ export class SessionStore {
   }
 
   /**
+   * Find a persisted session by thread ID, searching across all platforms
+   * AND across soft-deleted records that `load()` hides.
+   *
+   * Used by the plain-reply resume path in `message-handler.ts`: after the
+   * bot restarts and `cleanStale()` soft-deletes a paused session whose last
+   * activity is older than 2× timeout, the session is still in the file for
+   * the 3-day history window and can legitimately be resumed if the user
+   * replies in the thread. This mirrors `findByPostId()`'s behavior (which
+   * the 🔄 reaction resume path already uses) so both UX paths promised by
+   * the timeout message — "React with 🔄 OR send a new message to continue"
+   * — work equivalently.
+   *
+   * @param threadId - Thread ID within any platform
+   * @returns Session data if found (including soft-deleted), undefined otherwise
+   */
+  findByThreadIdAnyState(threadId: string): PersistedSession | undefined {
+    const data = this.loadRaw();
+    for (const session of Object.values(data.sessions)) {
+      if (session.threadId === threadId) {
+        return session;
+      }
+    }
+    return undefined;
+  }
+
+  /**
    * Find a persisted session by lifecycle post ID or session start post ID
    * Used for resuming sessions via emoji reaction
    * @param platformId - Platform instance ID

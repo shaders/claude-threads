@@ -33,6 +33,7 @@ function createMockSessionStore(overrides?: Partial<SessionStore>): SessionStore
     isPlatformEnabled: mock(() => true),
     setPlatformEnabled: mock(() => {}),
     findByThread: mock(() => undefined),
+    findByThreadIdAnyState: mock(() => undefined),
     findByPostId: mock(() => undefined),
     ...overrides,
   } as unknown as SessionStore;
@@ -523,7 +524,7 @@ describe('SessionRegistry', () => {
   });
 
   describe('getPersistedByThreadId', () => {
-    it('searches all persisted sessions for thread ID', () => {
+    it('delegates to sessionStore.findByThreadIdAnyState', () => {
       const mockSession: PersistedSession = {
         platformId: 'platform-x',
         threadId: 'target-thread',
@@ -541,12 +542,10 @@ describe('SessionRegistry', () => {
         planApproved: false,
       };
 
-      const sessionsMap = new Map<string, PersistedSession>([
-        ['platform-x:target-thread', mockSession],
-      ]);
-
       mockStore = createMockSessionStore({
-        load: mock(() => sessionsMap),
+        findByThreadIdAnyState: mock((id: string) =>
+          id === 'target-thread' ? mockSession : undefined
+        ),
       });
       registry = new SessionRegistry(mockStore);
 
@@ -556,12 +555,47 @@ describe('SessionRegistry', () => {
 
     it('returns undefined when thread not found', () => {
       mockStore = createMockSessionStore({
-        load: mock(() => new Map()),
+        findByThreadIdAnyState: mock(() => undefined),
       });
       registry = new SessionRegistry(mockStore);
 
       const result = registry.getPersistedByThreadId('nonexistent');
       expect(result).toBeUndefined();
+    });
+
+    it('returns soft-deleted sessions too (reply-resume after restart)', () => {
+      // Regression: a paused session that cleanStale() soft-deleted at bot
+      // startup must still be reachable by threadId so a user reply in the
+      // thread can resume it (same guarantee the 🔄 reaction already has).
+      const softDeleted: PersistedSession = {
+        platformId: 'platform-x',
+        threadId: 'target-thread',
+        claudeSessionId: 'claude-1',
+        startedBy: 'user',
+        startedAt: new Date().toISOString(),
+        sessionNumber: 1,
+        workingDir: '/test',
+        sessionAllowedUsers: [],
+        forceInteractivePermissions: false,
+        sessionStartPostId: null,
+        tasksPostId: null,
+        lastTasksContent: null,
+        lastActivityAt: new Date().toISOString(),
+        planApproved: false,
+        isPaused: true,
+        cleanedAt: new Date().toISOString(),
+      };
+
+      mockStore = createMockSessionStore({
+        // Simulates load() hiding it while the raw-scan helper still sees it.
+        load: mock(() => new Map()),
+        findByThreadIdAnyState: mock((id: string) =>
+          id === 'target-thread' ? softDeleted : undefined
+        ),
+      });
+      registry = new SessionRegistry(mockStore);
+
+      expect(registry.getPersistedByThreadId('target-thread')).toBe(softDeleted);
     });
   });
 

@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **Plain reply could no longer resume a paused session after bot restart** — when the bot restarted more than 2× `sessionTimeoutMinutes` after a session's last activity, `cleanStale()` soft-deleted the paused record. The reply-resume path used `load()` (which hides soft-deleted sessions), so a user reply in the thread promised by the timeout message (`send a new message to continue`) fell through to the `Mention me with your request` branch and a subsequent @mention started a fresh session, losing thread context. The 🔄 reaction path never had this problem because it reads raw data via `findByPostId`. The two resume paths now share the same visibility into the 3-day history window.
+
 ## [1.8.1] - 2026-04-21
 
 ### Fixed

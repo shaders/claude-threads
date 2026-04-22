@@ -204,16 +204,17 @@ export class SessionRegistry {
 
   /**
    * Get persisted session by thread ID alone (searches all platforms).
+   *
+   * Intentionally includes soft-deleted sessions: when a user replies in a
+   * thread whose paused session was soft-deleted by `cleanStale()` on the
+   * most recent bot restart, we still want to be able to resume it — that
+   * matches the 🔄-reaction resume path (which uses `findByPostId`, also
+   * reading raw data) and honors the "send a new message to continue"
+   * promise in the timeout message. Sessions permanently deleted by
+   * `cleanHistory()` are gone from the file and won't be found here.
    */
   getPersistedByThreadId(threadId: string): PersistedSession | undefined {
-    // Search through all persisted sessions for this threadId
-    const all = this.sessionStore.load();
-    for (const session of all.values()) {
-      if (session.threadId === threadId) {
-        return session;
-      }
-    }
-    return undefined;
+    return this.sessionStore.findByThreadIdAnyState(threadId);
   }
 
   /**

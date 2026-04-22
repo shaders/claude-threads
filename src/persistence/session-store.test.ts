@@ -167,6 +167,55 @@ describe('SessionStore', () => {
     });
   });
 
+  describe('findByThreadIdAnyState', () => {
+    it('finds an active (not soft-deleted) session by threadId', () => {
+      const session = createTestSession({
+        platformId: 'mattermost-main',
+        threadId: 'thread-xyz',
+      });
+      store.save('mattermost-main:thread-xyz', session);
+
+      const found = store.findByThreadIdAnyState('thread-xyz');
+      expect(found).toEqual(session);
+    });
+
+    it('still finds a session after softDelete (unlike load())', () => {
+      // Regression: the plain-reply resume path (message-handler.ts:198) must
+      // see soft-deleted paused sessions so the user can continue them when
+      // cleanStale() at bot startup has tagged them stale. Matches the 🔄
+      // reaction resume path (which uses findByPostId on raw data).
+      const session = createTestSession({
+        platformId: 'mattermost-main',
+        threadId: 'thread-xyz',
+        isPaused: true,
+      });
+      const sessionId = 'mattermost-main:thread-xyz';
+      store.save(sessionId, session);
+      store.softDelete(sessionId);
+
+      // load() hides it — that's by design for auto-resume on startup.
+      expect(store.load().size).toBe(0);
+      // But our lookup still resolves it so a user reply can resume.
+      const found = store.findByThreadIdAnyState('thread-xyz');
+      expect(found).toBeDefined();
+      expect(found?.threadId).toBe('thread-xyz');
+      expect(found?.cleanedAt).toBeDefined();
+    });
+
+    it('returns undefined for unknown threadId', () => {
+      const session = createTestSession({ threadId: 'thread-a' });
+      store.save(`${session.platformId}:${session.threadId}`, session);
+      expect(store.findByThreadIdAnyState('thread-b')).toBeUndefined();
+    });
+
+    it('searches across platforms (returns first match)', () => {
+      const mm = createTestSession({ platformId: 'mattermost-main', threadId: 'shared-id' });
+      store.save('mattermost-main:shared-id', mm);
+      const found = store.findByThreadIdAnyState('shared-id');
+      expect(found?.platformId).toBe('mattermost-main');
+    });
+  });
+
   describe('softDelete', () => {
     it('marks a session as cleaned but keeps it', () => {
       const session = createTestSession();
