@@ -81,8 +81,14 @@ export function buildSessionContext(
  *
  * This prompt is appended to Claude's system prompt via --append-system-prompt.
  * It provides context about running in a chat platform and available commands.
+ *
+ * @param opts.attachmentsEnabled — when false, the `!attach` line is omitted
+ *   from the "Commands You Can Execute" section so Claude doesn't waste a
+ *   turn on a command the bot will refuse. The handler still rejects late if
+ *   the flag flips between session start and command execution.
  */
-export function generateChatPlatformPrompt(): string {
+export function generateChatPlatformPrompt(opts?: { attachmentsEnabled?: boolean }): string {
+  const attachmentsEnabled = opts?.attachmentsEnabled ?? true;
   // Get user commands (excluding passthrough)
   const userCommands = COMMAND_REGISTRY
     .filter(cmd =>
@@ -107,9 +113,14 @@ export function generateChatPlatformPrompt(): string {
     }
   }
 
-  // Get Claude executable commands
+  // Get Claude executable commands. `!attach` is gated by the runtime
+  // attachment flag — when disabled we don't even tell Claude the command
+  // exists, preventing wasted turns and noisy "Claude executed: !attach …"
+  // visibility posts the operator would have to mute.
+  const allowed = new Set(['worktree', 'cd']);
+  if (attachmentsEnabled) allowed.add('attach');
   const claudeCommands = getClaudeExecutableCommands()
-    .filter(cmd => ['worktree', 'cd'].includes(cmd.command));
+    .filter(cmd => allowed.has(cmd.command));
 
   // Get commands Claude should avoid
   const avoidCommands = getClaudeAvoidCommands();

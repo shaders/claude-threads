@@ -58,7 +58,7 @@ import { formatVersionString } from '../../utils/format.js';
 import { shortenPath } from '../index.js';
 import { getLogFilePath } from '../../persistence/thread-logger.js';
 import { quickQuery } from '../../claude/quick-query.js';
-import { CHAT_PLATFORM_PROMPT } from '../../session/lifecycle.js';
+import { chatPlatformPromptFor } from '../../session/lifecycle.js';
 import { buildSessionContext } from '../../commands/system-prompt-generator.js';
 
 const log = createLogger('commands');
@@ -380,7 +380,7 @@ export async function changeDirectory(
 
   // Build system prompt with platform context for the new directory
   const sessionContext = buildSessionContext(session.platform, absoluteDir, session.threadId);
-  const appendSystemPrompt = `${sessionContext}\n\n${CHAT_PLATFORM_PROMPT}`;
+  const appendSystemPrompt = `${sessionContext}\n\n${chatPlatformPromptFor(ctx)}`;
 
   const cliOptions: ClaudeCliOptions = {
     workingDir: absoluteDir,

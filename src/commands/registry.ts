@@ -174,6 +174,20 @@ export const COMMAND_REGISTRY: CommandDefinition[] = [
   },
 
   // ---------------------------------------------------------------------------
+  // File attachments
+  // ---------------------------------------------------------------------------
+  {
+    command: 'attach',
+    description: 'Attach a generated file to the chat thread',
+    args: '<path>',
+    category: 'system',
+    audience: 'claude',
+    claudeNotes: 'Use after generating binary outputs (xlsx, pdf, png, csv, docx, zip) the user wants to download. Path is relative to the current working directory (or the active worktree, if any). Quote filenames with spaces: !attach "Q1 report.xlsx". Result returned in <command-result>.',
+    claudeCanExecute: true,
+    returnsResultToClaude: true,
+  },
+
+  // ---------------------------------------------------------------------------
   // Collaboration
   // ---------------------------------------------------------------------------
   {

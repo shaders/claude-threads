@@ -313,6 +313,85 @@ describe('removeCommandFromText', () => {
     const parsed = { command: 'cd', args: '/path', match: '!cd /path' };
     expect(removeCommandFromText('!cd /path', parsed)).toBe('');
   });
+
+  test('strips only line-anchored occurrence — preserves inline mentions', () => {
+    // Regression-defender for the duplicate-fire bug. Previous version did
+    // `text.replace(match, '')` which strips the first textual occurrence —
+    // an inline mention of the same string. Then the parser loop in
+    // events/handler.ts would re-find the line-anchored command on the
+    // next iteration and fire it again. With the fix, only the
+    // line-anchored occurrence is stripped; the inline mention survives;
+    // re-parsing finds nothing.
+    const text = 'Use !attach foo.xlsx like this.\nNow:\n!attach foo.xlsx\nDone.';
+    const parsed = parseClaudeCommand(text);
+    expect(parsed?.match).toBe('!attach foo.xlsx');
+    const after = removeCommandFromText(text, parsed!);
+    // Inline mention is preserved.
+    expect(after).toContain('Use !attach foo.xlsx like this.');
+    // Re-parsing the result must NOT find another !attach — that's what
+    // would cause the duplicate fire.
+    expect(parseClaudeCommand(after)).toBeNull();
+  });
+});
+
+describe('parseClaudeCommand !attach', () => {
+  test('parses !attach with simple path', () => {
+    const result = parseClaudeCommand('!attach output.xlsx');
+    expect(result).toEqual({ command: 'attach', args: 'output.xlsx', match: '!attach output.xlsx' });
+  });
+
+  test('parses !attach with double-quoted filename containing spaces', () => {
+    const result = parseClaudeCommand('!attach "Q1 report.xlsx"');
+    expect(result).toEqual({ command: 'attach', args: 'Q1 report.xlsx', match: '!attach "Q1 report.xlsx"' });
+  });
+
+  test('parses !attach with single-quoted filename containing spaces', () => {
+    const result = parseClaudeCommand("!attach 'Q1 report.xlsx'");
+    expect(result).toEqual({ command: 'attach', args: 'Q1 report.xlsx', match: "!attach 'Q1 report.xlsx'" });
+  });
+
+  test('parses !attach embedded in surrounding text', () => {
+    const result = parseClaudeCommand('Done generating the report.\n!attach reports/q1.pdf\nLet me know if you need changes.');
+    expect(result).toEqual({ command: 'attach', args: 'reports/q1.pdf', match: '!attach reports/q1.pdf' });
+  });
+
+  test('rejects !attach followed by trailing prose', () => {
+    // Regression-defender for the previous greedy regex that captured the
+    // whole rest of the line and produced misleading ENOENT errors when
+    // Claude wrote `!attach output.xlsx and here is what it contains`.
+    expect(parseClaudeCommand('!attach output.xlsx and here is what it contains')).toBeNull();
+  });
+
+  test('does not eat across a newline between !attach and the path', () => {
+    // Regression-defender: \s+ in the previous regex matched newlines, so
+    // `!attach\nsecret.txt` would have parsed with args=secret.txt — letting
+    // Claude (or a weird wrap) inadvertently exfiltrate the next-line
+    // content. Path must be on the same line as the command.
+    expect(parseClaudeCommand('!attach\nsecret.txt')).toBeNull();
+    expect(parseClaudeCommand('!attach   \n   /etc/hosts')).toBeNull();
+  });
+
+  test('returns null when path is missing', () => {
+    expect(parseClaudeCommand('!attach')).toBeNull();
+    expect(parseClaudeCommand('!attach   ')).toBeNull();
+  });
+
+  test('iterating parse+remove extracts every !attach in a multi-attach turn', () => {
+    // The handler in events/handler.ts loops parseClaudeCommand+
+    // removeCommandFromText so multiple attaches in one Claude turn each get
+    // executed, instead of only the first surviving and the rest silently
+    // rendering as visible text. This test pins that contract at the parser
+    // boundary so a future regex change can't break the loop's progress.
+    let remaining = 'Here are the two reports.\n!attach q1.xlsx\n!attach q2.xlsx\nLet me know.';
+    const seen: string[] = [];
+    for (let i = 0; i < 16; i++) {
+      const parsed = parseClaudeCommand(remaining);
+      if (!parsed) break;
+      seen.push(parsed.args ?? '');
+      remaining = removeCommandFromText(remaining, parsed);
+    }
+    expect(seen).toEqual(['q1.xlsx', 'q2.xlsx']);
+  });
 });
 
 describe('CLAUDE_ALLOWED_COMMANDS', () => {
@@ -321,6 +400,7 @@ describe('CLAUDE_ALLOWED_COMMANDS', () => {
     expect(CLAUDE_ALLOWED_COMMANDS.has('cd')).toBe(true);
     expect(CLAUDE_ALLOWED_COMMANDS.has('worktree list')).toBe(true);
     expect(CLAUDE_ALLOWED_COMMANDS.has('bug')).toBe(true);
-    expect(CLAUDE_ALLOWED_COMMANDS.size).toBe(3);
+    expect(CLAUDE_ALLOWED_COMMANDS.has('attach')).toBe(true);
+    expect(CLAUDE_ALLOWED_COMMANDS.size).toBe(4);
   });
 });

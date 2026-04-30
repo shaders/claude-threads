@@ -7,6 +7,7 @@ import yaml from 'js-yaml';
 export type {
   WorktreeMode,
   ThreadLogsConfig,
+  AttachmentsConfig,
   LimitsConfig,
   ResolvedLimits,
   StickyMessageCustomization,

@@ -2,7 +2,7 @@ import { WebSocket } from '../../utils/websocket.js';
 import type { MattermostPlatformConfig } from '../../config/index.js';
 import { wsLogger, createLogger } from '../../utils/logger.js';
 import { formatShortId } from '../../utils/format.js';
-import { escapeRegExp, formatWebSocketError } from '../utils.js';
+import { escapeRegExp, formatWebSocketError, lookupMimeType } from '../utils.js';
 import { BasePlatformClient } from '../base-client.js';
 
 const log = createLogger('mattermost');
@@ -260,16 +260,83 @@ export class MattermostClient extends BasePlatformClient {
   // recognized by all Mattermost instances (e.g., :stopwatch:, :pause:).
   async createPost(
     message: string,
-    threadId?: string
+    threadId?: string,
+    options?: { filePaths?: string[] }
   ): Promise<PlatformPost> {
+    let fileIds: string[] | undefined;
+    if (options?.filePaths && options.filePaths.length > 0) {
+      // Upload each file first; Mattermost's POST /posts accepts file_ids that
+      // must already exist server-side. We do this serially — the bot won't
+      // typically attach more than one file per post and parallel uploads
+      // complicate error reporting (which file failed?).
+      fileIds = [];
+      for (const path of options.filePaths) {
+        const id = await this.uploadFile(path);
+        fileIds.push(id);
+      }
+    }
     const request: CreatePostRequest = {
       channel_id: this.channelId,
       message,
       // Only include root_id if it's a non-empty string (Mattermost rejects empty string)
       root_id: threadId || undefined,
+      file_ids: fileIds,
     };
-    const post = await this.api<MattermostPost>('POST', '/posts', request);
-    return this.normalizePlatformPost(post);
+    try {
+      const post = await this.api<MattermostPost>('POST', '/posts', request);
+      return this.normalizePlatformPost(post);
+    } catch (err) {
+      // Uploaded files are now orphaned server-side until Mattermost's GC
+      // sweeps them. Surface the ids so an operator can reconcile if it
+      // matters for storage budgeting; we can't reliably reach the
+      // /files/<id> DELETE endpoint as the bot user. Re-throw so the caller
+      // sees the post failure (the upstream `!attach` handler turns this
+      // into a clear error back to Claude).
+      if (fileIds && fileIds.length > 0) {
+        log.warn(`Post creation failed after file upload — orphaned file_ids: ${fileIds.join(',')}`);
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * Upload a file to the channel and return its server-side file id, suitable
+   * for inclusion in a post's `file_ids` array. The id is short-lived: the
+   * Mattermost server expects it to be referenced in a post within a few
+   * minutes, otherwise it gets garbage-collected.
+   */
+  private async uploadFile(absolutePath: string): Promise<string> {
+    const { readFile } = await import('fs/promises');
+    const { basename } = await import('path');
+    const buffer = await readFile(absolutePath);
+    const filename = basename(absolutePath);
+    const mimeType = lookupMimeType(filename);
+
+    // Wrap the Buffer in a Uint8Array *view* (same backing memory) rather
+    // than `new Uint8Array(buffer)` which copies. For 25 MB attachments this
+    // halves peak RSS during upload; the Blob constructor accepts the view.
+    const view = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+    const form = new FormData();
+    form.append('channel_id', this.channelId);
+    form.append('files', new Blob([view], { type: mimeType }), filename);
+
+    const url = `${this.url}/api/v4/files`;
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${this.token}` },
+      body: form,
+    });
+    if (!response.ok) {
+      const text = await response.text();
+      log.warn(`File upload failed: ${response.status} ${text.substring(0, 200)}`);
+      throw new Error(`Mattermost file upload error ${response.status}: ${text}`);
+    }
+    const result = await response.json() as { file_infos: Array<{ id: string }> };
+    if (!result.file_infos?.[0]?.id) {
+      throw new Error('Mattermost file upload returned no file id');
+    }
+    log.debug(`Uploaded file ${filename} → ${result.file_infos[0].id}`);
+    return result.file_infos[0].id;
   }
 
   // Update a message (for streaming updates)

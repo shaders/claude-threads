@@ -135,12 +135,21 @@ export interface PlatformClient extends EventEmitter {
   // ============================================================================
 
   /**
-   * Create a new post/message
+   * Create a new post/message, optionally with file attachments.
+   *
    * @param message - Message text
    * @param threadId - Optional thread parent ID
+   * @param options.filePaths - Absolute paths on the bot host to upload and
+   *   attach. Each platform handles the upload+attach atomically; callers do
+   *   not need to do a separate upload step. Files larger than the platform
+   *   server's per-file limit will throw.
    * @returns The created post
    */
-  createPost(message: string, threadId?: string): Promise<PlatformPost>;
+  createPost(
+    message: string,
+    threadId?: string,
+    options?: { filePaths?: string[] }
+  ): Promise<PlatformPost>;
 
   /**
    * Update an existing post/message

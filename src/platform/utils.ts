@@ -25,6 +25,36 @@ export function escapeRegExp(string: string): string {
 }
 
 /**
+ * Look up a MIME type for a filename based on its extension. Used for the
+ * `!attach` upload path so platforms render previews instead of treating
+ * every attachment as a generic binary blob. Unknown extensions return
+ * `application/octet-stream`, which downloads correctly but skips inline
+ * preview rendering.
+ */
+const MIME_BY_EXT: Record<string, string> = {
+  '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  '.xls': 'application/vnd.ms-excel',
+  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.pdf': 'application/pdf',
+  '.csv': 'text/csv',
+  '.json': 'application/json',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.svg': 'image/svg+xml',
+  '.zip': 'application/zip',
+  '.txt': 'text/plain',
+  '.md': 'text/markdown',
+};
+
+export function lookupMimeType(filename: string): string {
+  const dot = filename.lastIndexOf('.');
+  if (dot < 0) return 'application/octet-stream';
+  return MIME_BY_EXT[filename.slice(dot).toLowerCase()] ?? 'application/octet-stream';
+}
+
+/**
  * Format a WebSocket error event into a readable string.
  *
  * Node's `ws` library and `undici` deliver two different shapes to `onerror`:

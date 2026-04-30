@@ -73,6 +73,7 @@ export interface CreatePostRequest {
   message: string;
   root_id?: string; // For threading
   props?: Record<string, unknown>;
+  file_ids?: string[]; // Server-side ids of pre-uploaded files to attach
 }
 
 export interface UpdatePostRequest {

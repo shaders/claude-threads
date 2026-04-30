@@ -27,7 +27,7 @@ import * as streaming from '../operations/streaming/index.js';
 import * as events from '../operations/events/index.js';
 import * as commands from '../operations/commands/index.js';
 import * as lifecycle from './lifecycle.js';
-import { CHAT_PLATFORM_PROMPT } from './lifecycle.js';
+import { generateChatPlatformPrompt } from '../commands/index.js';
 import * as worktreeModule from '../operations/worktree/index.js';
 import * as contextPrompt from '../operations/context-prompt/index.js';
 import * as stickyMessage from '../operations/sticky-message/index.js';
@@ -104,6 +104,10 @@ export class SessionManager extends EventEmitter {
   // Claude account pool (single-account mode when empty)
   private readonly accountPool: AccountPool;
 
+  // File attachment configuration (resolved with defaults)
+  private readonly attachmentsEnabled: boolean;
+  private readonly attachmentsMaxBytes: number;
+
   constructor(
     workingDir: string,
     /**
@@ -120,7 +124,8 @@ export class SessionManager extends EventEmitter {
     threadLogsEnabled = true,
     threadLogsRetentionDays = 30,
     limits?: LimitsConfig,
-    claudeAccounts?: ClaudeAccount[]
+    claudeAccounts?: ClaudeAccount[],
+    attachments?: { enabled?: boolean; maxSizeBytes?: number },
   ) {
     super();
     this.workingDir = workingDir;
@@ -136,6 +141,8 @@ export class SessionManager extends EventEmitter {
     this.sessionStore = new SessionStore(sessionsPath);
     this.registry = new SessionRegistry(this.sessionStore);
     this.accountPool = new AccountPool(claudeAccounts);
+    this.attachmentsEnabled = attachments?.enabled ?? true;
+    this.attachmentsMaxBytes = attachments?.maxSizeBytes ?? 25_000_000;
 
     // Create background tasks (started in initialize())
     this.sessionMonitor = new SessionMonitor({
@@ -258,6 +265,8 @@ export class SessionManager extends EventEmitter {
       threadLogsRetentionDays: this.threadLogsRetentionDays,
       permissionTimeoutMs: this.limits.permissionTimeoutSeconds * 1000,
       flushDelayMs: this.limits.flushDelayMs,
+      attachmentsEnabled: this.attachmentsEnabled,
+      attachmentsMaxBytes: this.attachmentsMaxBytes,
     };
 
     const state: SessionState = {
@@ -1218,7 +1227,7 @@ export class SessionManager extends EventEmitter {
       generateWorkSummary: (s) => commands.generateWorkSummary(s),
       getThreadMessagesForContext: (s, limit, excludePostId) => contextPrompt.getThreadMessagesForContext(s, limit, excludePostId),
       formatContextForClaude: (messages, summary) => contextPrompt.formatContextForClaude(messages, summary),
-      appendSystemPrompt: CHAT_PLATFORM_PROMPT,
+      appendSystemPrompt: generateChatPlatformPrompt({ attachmentsEnabled: this.attachmentsEnabled }),
       registerPost: (postId, tid) => this.registerPost(postId, tid),
       updateStickyMessage: () => this.updateStickyMessage(),
       registerWorktreeUser: (path, sid) => this.registerWorktreeUser(path, sid),

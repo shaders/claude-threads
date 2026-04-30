@@ -22,6 +22,18 @@ export interface ThreadLogsConfig {
 }
 
 /**
+ * File attachment configuration
+ *
+ * Controls Claude's ability to upload generated files into the chat thread
+ * via the `!attach <path>` command. When disabled, the command is hidden
+ * from Claude's system prompt and rejected at the handler.
+ */
+export interface AttachmentsConfig {
+  enabled?: boolean;       // Default: true
+  maxSizeBytes?: number;   // Default: 25_000_000 (25 MB)
+}
+
+/**
  * Resource limits and timeouts configuration
  * All fields are optional with sensible defaults. Additions here must stay
  * backward-compatible (optional + defaulted) — `config.yaml` files in the
@@ -149,6 +161,8 @@ export interface Config {
   stickyMessage?: StickyMessageCustomization; // Optional sticky message customization
   /** Optional Claude account pool. When omitted, bot runs in single-account mode. */
   claudeAccounts?: ClaudeAccount[];
+  /** File attachment behaviour for the `!attach` command. */
+  attachments?: AttachmentsConfig;
   platforms: PlatformInstanceConfig[];
 }
 

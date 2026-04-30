@@ -46,6 +46,10 @@ export interface SessionConfig {
   permissionTimeoutMs?: number;
   /** Streaming flush cadence in ms (default: 500). Lower = snappier updates. */
   flushDelayMs?: number;
+  /** Whether Claude can attach generated files via `!attach <path>` (default: true). */
+  attachmentsEnabled?: boolean;
+  /** Per-file size cap for `!attach` in bytes (default: 25_000_000). */
+  attachmentsMaxBytes?: number;
 }
 
 // =============================================================================

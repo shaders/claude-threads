@@ -678,10 +678,26 @@ function firePeriodicReclassification(
  * System prompt that gives Claude context about running in a chat platform.
  * This is appended to Claude's system prompt via --append-system-prompt.
  *
+ * Default with all features enabled — session-bound call sites should use
+ * `chatPlatformPromptFor(ctx)` instead, so runtime feature flags (notably
+ * `attachmentsEnabled`) gate which commands appear in Claude's instruction
+ * set. This export is retained for tests and the worktree-handler entry
+ * point in SessionManager that snapshots a default prompt at construction.
+ *
  * GENERATED from the unified command registry in src/commands/registry.ts.
  * Edit the registry to update this prompt - do not edit this constant directly.
  */
 export const CHAT_PLATFORM_PROMPT = generateChatPlatformPrompt();
+
+/**
+ * Build the chat-platform prompt for a specific session, honouring the
+ * session's runtime config.
+ */
+export function chatPlatformPromptFor(ctx: SessionContext): string {
+  return generateChatPlatformPrompt({
+    attachmentsEnabled: ctx.config.attachmentsEnabled !== false,
+  });
+}
 
 /**
  * How often to fire periodic reclassification (every N messages).
@@ -861,7 +877,7 @@ export async function startSession(
 
   // Build system prompt with session context
   const sessionContext = buildSessionContext(platform, workingDir, actualThreadId);
-  const systemPrompt = `${sessionContext}\n\n${CHAT_PLATFORM_PROMPT}`;
+  const systemPrompt = `${sessionContext}\n\n${chatPlatformPromptFor(ctx)}`;
 
   // Create Claude CLI with options
   const platformMcpConfig = platform.getMcpConfig();
@@ -1117,7 +1133,7 @@ export async function resumeSession(
 
   // Include system prompt for resumed sessions (provides platform context and command info)
   const sessionContext = buildSessionContext(platform, state.workingDir, state.threadId);
-  const appendSystemPrompt = `${sessionContext}\n\n${CHAT_PLATFORM_PROMPT}`;
+  const appendSystemPrompt = `${sessionContext}\n\n${chatPlatformPromptFor(ctx)}`;
 
   // Resume MUST re-use the same Claude account the session started on —
   // for OAuth accounts the conversation history lives under that HOME.

@@ -538,7 +538,8 @@ async function startWithoutDaemon() {
     threadLogsEnabled,
     threadLogsRetentionDays,
     config.limits,  // Resource limits (optional, has sensible defaults)
-    config.claudeAccounts  // Claude account pool (undefined = single-account mode)
+    config.claudeAccounts,  // Claude account pool (undefined = single-account mode)
+    config.attachments  // !attach behaviour (undefined = enabled, 25 MB cap)
   );
 
   // Set sticky message customization from config

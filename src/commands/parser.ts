@@ -155,6 +155,27 @@ export function parseClaudeCommand(text: string): ParsedCommand | null {
     };
   }
 
+  // Check for !attach command. Two accepted shapes:
+  //   !attach output.xlsx              — path with no whitespace
+  //   !attach "Q1 report.xlsx"         — path with whitespace, quoted
+  //   !attach 'Q1 report.xlsx'         — single-quoted variant
+  //
+  // [ \t]+ rather than \s+ between command and arg: \s also matches \n, so
+  // `!attach\nsomething` would have matched and the bot would happily upload
+  // whatever came on the next line. Same for trailing — only spaces and tabs
+  // count as in-line whitespace.
+  // `[^"\r\n]+` and `[^'\r\n]+` reject embedded \r so a CRLF input on Windows
+  // doesn't capture a stray \r into the filename and ENOENT on lookup.
+  const attachMatch = text.match(/^!attach[ \t]+(?:"([^"\r\n]+)"|'([^'\r\n]+)'|(\S+))[ \t]*$/m);
+  if (attachMatch && CLAUDE_ALLOWED_COMMANDS.has('attach')) {
+    const path = attachMatch[1] ?? attachMatch[2] ?? attachMatch[3];
+    return {
+      command: 'attach',
+      args: path,
+      match: attachMatch[0].trimEnd(),
+    };
+  }
+
   // Check for !bug command
   const bugMatch = text.match(/^!bug\s+(.+)$/m);
   if (bugMatch && CLAUDE_ALLOWED_COMMANDS.has('bug')) {
@@ -178,12 +199,30 @@ export function isClaudeAllowedCommand(command: string): boolean {
 /**
  * Remove a command from text (for cleaning up display).
  *
+ * Strips ONLY a line-anchored occurrence of `command.match`, not the first
+ * textual one. The parser uses multiline-anchored regexes (`^…$/m`), so the
+ * occurrence it actually matched is always on its own line. A plain
+ * `text.replace(match, '')` would remove the *first* substring match,
+ * which can be an unrelated inline mention of the same string — e.g.
+ *
+ *     Use !attach foo.xlsx like this.    ← inline mention
+ *     !attach foo.xlsx                   ← actual command
+ *
+ * Without line-anchoring, iteration 1 would strip the inline mention,
+ * leave the line-anchored command intact, and iteration 2 of the parser
+ * loop would re-parse and re-fire the command, double-uploading the file.
+ *
  * @param text - Original text
  * @param command - The parsed command to remove
  * @returns Text with command removed and trimmed
  */
 export function removeCommandFromText(text: string, command: ParsedCommand): string {
-  return text.replace(command.match, '').trim();
+  const escaped = command.match.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // Match the command as a complete line: nothing significant before it on
+  // the line, optional trailing whitespace, end-of-line. The /m flag is
+  // what makes `^` and `$` line-anchored rather than string-anchored.
+  const lineRe = new RegExp(`^${escaped}[ \\t]*$`, 'm');
+  return text.replace(lineRe, '').trim();
 }
 
 // =============================================================================

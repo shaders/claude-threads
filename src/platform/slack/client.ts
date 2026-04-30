@@ -1,7 +1,7 @@
 import { WebSocket } from '../../utils/websocket.js';
 import type { SlackPlatformConfig } from '../../config/index.js';
 import { wsLogger, createLogger } from '../../utils/logger.js';
-import { truncateMessageSafely, escapeRegExp, getEmojiName, formatWebSocketError } from '../utils.js';
+import { truncateMessageSafely, escapeRegExp, getEmojiName, formatWebSocketError, lookupMimeType } from '../utils.js';
 import { BasePlatformClient } from '../base-client.js';
 
 const log = createLogger('slack');
@@ -816,8 +816,12 @@ export class SlackClient extends BasePlatformClient {
   async createPost(
     message: string,
     threadId?: string,
-    options?: { unfurl?: boolean }
+    options?: { unfurl?: boolean; filePaths?: string[] }
   ): Promise<PlatformPost> {
+    if (options?.filePaths && options.filePaths.length > 0) {
+      return this.createPostWithFiles(message, options.filePaths, threadId);
+    }
+
     // Disable unfurling for channel-level posts (sticky message) by default
     // Thread messages can have previews unless explicitly disabled
     const shouldUnfurl = options?.unfurl ?? (threadId !== undefined);
@@ -846,6 +850,124 @@ export class SlackClient extends BasePlatformClient {
       message: response.message.text,
       rootId: threadId,
       createAt: Math.floor(parseFloat(response.ts) * 1000),
+    };
+  }
+
+  /**
+   * Upload one or more files and publish them to the channel/thread with
+   * `message` as the initial comment. Slack's `files.uploadV2` flow has three
+   * steps: get a per-file upload URL, PUT the bytes, then complete the upload
+   * with channel + thread + initial_comment.
+   *
+   * The completeUploadExternal response is intentionally minimal — it does not
+   * include the chat ts of the message Slack synthesises around the file. We
+   * surface the first file id as the post id so callers can still pass
+   * something through their tracking maps; downstream code that expects a
+   * real ts should branch on whether file attachments were requested.
+   */
+  private async createPostWithFiles(
+    message: string,
+    filePaths: string[],
+    threadId?: string,
+  ): Promise<PlatformPost> {
+    const { readFile } = await import('fs/promises');
+    const { basename } = await import('path');
+
+    const completedFiles: Array<{ id: string; title: string }> = [];
+    const truncatedMessage = this.truncateMessageIfNeeded(message);
+    try {
+      for (const path of filePaths) {
+        const buffer = await readFile(path);
+        const filename = basename(path);
+
+        // Step 1: ask Slack where to PUT the bytes. We don't go through the
+        // shared `api()` helper because Slack documents this endpoint as
+        // `application/x-www-form-urlencoded` and `api()` always sends JSON;
+        // GET-with-querystring is the simplest way to keep the helper happy
+        // while still hitting Slack correctly. The 429 handling here mirrors
+        // `api()` AND publishes back-pressure to the same fields the helper
+        // reads (`rateLimitDelay` / `rateLimitRetryAfter`), so concurrent
+        // chat.postMessage / reactions.add calls serialise behind the same
+        // cooldown instead of each tripping its own 429.
+        const getUrl = `${this.apiUrl}/files.getUploadURLExternal?filename=${encodeURIComponent(filename)}&length=${buffer.byteLength}`;
+        let getResp: Response | null = null;
+        for (let attempt = 0; attempt <= this.MAX_RATE_LIMIT_RETRIES; attempt++) {
+          getResp = await fetch(getUrl, {
+            method: 'GET',
+            headers: { Authorization: `Bearer ${this.botToken}` },
+          });
+          if (getResp.status !== 429) break;
+          if (attempt === this.MAX_RATE_LIMIT_RETRIES) {
+            throw new Error(`Slack getUploadURLExternal rate-limited after ${this.MAX_RATE_LIMIT_RETRIES} retries`);
+          }
+          const retryAfter = parseInt(getResp.headers.get('Retry-After') || '5', 10);
+          this.rateLimitDelay = retryAfter * 1000;
+          this.rateLimitRetryAfter = Date.now() + this.rateLimitDelay;
+          log.warn(`getUploadURLExternal rate limited, retrying after ${retryAfter}s (attempt ${attempt + 1}/${this.MAX_RATE_LIMIT_RETRIES})`);
+          await new Promise((r) => setTimeout(r, retryAfter * 1000));
+        }
+        if (!getResp || !getResp.ok) {
+          const text = getResp ? await getResp.text() : 'no response';
+          throw new Error(`Slack getUploadURLExternal failed: ${getResp?.status ?? '?'} ${text}`);
+        }
+        const getData = await getResp.json() as { ok: boolean; error?: string; upload_url: string; file_id: string };
+        if (!getData.ok) {
+          throw new Error(`Slack getUploadURLExternal error: ${getData.error}`);
+        }
+
+        // Step 2: POST the bytes as multipart/form-data with field name `file`.
+        // Raw-body POST happens to work for small files but is undocumented and
+        // brittle on Slack's CDN edge; the @slack/web-api SDK uses multipart
+        // form-data, and we mirror that. The `Content-Type` header is left for
+        // `fetch` to set (it includes the multipart boundary automatically).
+        // Zero-copy view over the Buffer (see MM client comment) — important
+        // for the 25 MB default cap which already sits in memory once.
+        const view = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+        const form = new FormData();
+        form.append('file', new Blob([view], { type: lookupMimeType(filename) }), filename);
+        const uploadResp = await fetch(getData.upload_url, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${this.botToken}` },
+          body: form,
+        });
+        if (!uploadResp.ok) {
+          const text = await uploadResp.text();
+          throw new Error(`Slack file upload failed: ${uploadResp.status} ${text}`);
+        }
+
+        completedFiles.push({ id: getData.file_id, title: filename });
+      }
+
+      // Step 3: publish to channel/thread with initial_comment as the message.
+      // Slack truncates initial_comment at 1500 chars internally.
+      const completeBody: Record<string, unknown> = {
+        files: completedFiles,
+        channel_id: this.channelId,
+      };
+      if (truncatedMessage) completeBody.initial_comment = truncatedMessage;
+      if (threadId) completeBody.thread_ts = threadId;
+
+      await this.api<SlackApiResponse>('POST', 'files.completeUploadExternal', completeBody);
+    } catch (err) {
+      // Whether the failure happened mid-upload or in completeUploadExternal,
+      // the file_ids we already obtained from getUploadURLExternal are
+      // dangling on Slack's side until their own GC sweeps them. Surface the
+      // ids so an operator can reconcile against storage budgets if they
+      // care; we don't have a `files.delete` call wired up.
+      if (completedFiles.length > 0) {
+        log.warn(`completeUploadExternal failed — orphaned slack file_ids: ${completedFiles.map((f) => f.id).join(',')}`);
+      }
+      throw err;
+    }
+
+    return {
+      id: completedFiles[0].id,
+      platformId: this.platformId,
+      channelId: this.channelId,
+      userId: this.botUserId || '',
+      message: truncatedMessage,
+      rootId: threadId,
+      createAt: Date.now(),
     };
   }
 

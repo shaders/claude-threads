@@ -74,6 +74,23 @@ describe('generateChatPlatformPrompt', () => {
     expect(prompt).toContain('WARNING');
     expect(prompt).toContain("won't remember this conversation");
   });
+
+  it('includes !attach when attachments are enabled (default)', () => {
+    const prompt = generateChatPlatformPrompt();
+    expect(prompt).toContain('!attach');
+  });
+
+  it('omits !attach when attachments are explicitly disabled', () => {
+    // Regression-defender: this is the contract that lets operators turn the
+    // feature off without Claude wasting turns trying to use it. Without the
+    // gate, `!attach` appears in the prompt and Claude will keep calling it
+    // even though the handler refuses every time.
+    const prompt = generateChatPlatformPrompt({ attachmentsEnabled: false });
+    expect(prompt).not.toContain('!attach');
+    // Sanity: other claudeCanExecute commands are still present.
+    expect(prompt).toContain('!worktree list');
+    expect(prompt).toContain('!cd');
+  });
 });
 
 describe('buildSessionContext', () => {

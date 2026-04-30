@@ -34,25 +34,74 @@ const sessionLog = createSessionLog(log);
  * Detect and execute commands from Claude's assistant output.
  * Uses the shared command parser with Claude's allowlist.
  * Returns the text with the command removed (if executed), or original text.
+ *
+ * The loop matters for `!attach`: Claude often emits multiple lines like
+ *
+ *     Here are the two reports.
+ *     !attach q1.xlsx
+ *     !attach q2.xlsx
+ *
+ * `parseClaudeCommand` only finds the first match per call, so without the
+ * loop the second attach would silently render as visible text and never
+ * upload. The bound (`MAX_PARSE_ITERATIONS`) defends against pathological
+ * outputs without changing typical-case behaviour.
+ *
+ * `RESPAWNING_COMMANDS` short-circuits the loop after a command that kills
+ * and respawns the Claude CLI process. Without that break, a turn like
+ *
+ *     !cd /tmp/x
+ *     !attach foo.xlsx
+ *
+ * would fire `executeClaudeCommand('cd', …)` (async — kill + respawn) and
+ * immediately fan out into `executeClaudeCommand('attach', …)` against the
+ * old, dying process. The attach then either dies silently with the old
+ * process or its `<command-result>` reaches a freshly-spawned Claude that
+ * has zero context for the original request. Trailing commands after a
+ * respawn just don't make sense in the same turn — Claude can re-emit them
+ * after `!cd` settles. The trailing text is left in the displayed message
+ * so the user can see what was queued.
  */
-function detectAndExecuteClaudeCommands(
+const MAX_PARSE_ITERATIONS = 16;
+const RESPAWNING_COMMANDS = new Set(['cd']);
+// `!attach` reads the full file into memory (Buffer + Blob view + multipart
+// frame ≈ 2× file size in transit). With the 25 MB default cap, fanning out
+// 16 attaches in one Claude turn would peak around 400 MB — enough to OOM
+// the bot under load when several sessions do this simultaneously. Serialise
+// attach dispatch within a single turn so the per-session peak is bounded
+// at one in-flight upload at a time. Other commands stay fire-and-forget.
+const SERIALIZED_COMMANDS = new Set(['attach']);
+
+async function detectAndExecuteClaudeCommands(
   text: string,
   session: Session,
   ctx: SessionContext
-): string {
-  const parsed = parseClaudeCommand(text);
+): Promise<string> {
+  let remaining = text;
+  for (let i = 0; i < MAX_PARSE_ITERATIONS; i++) {
+    const parsed = parseClaudeCommand(remaining);
+    if (!parsed || !isClaudeAllowedCommand(parsed.command)) break;
 
-  if (parsed && isClaudeAllowedCommand(parsed.command)) {
     sessionLog(session).info(`🤖 Claude executing !${parsed.command} ${parsed.args || ''}`);
+    const cmdName = parsed.command;
+    const cmdArgs = parsed.args ?? '';
+    // The `.catch` is load-bearing: `executeClaudeCommand` awaits `postError`
+    // on every rejection path, and `postError` itself can throw (network
+    // blip, MM 500 after exhausting its own retries, channel deleted out
+    // from under the bot, token rotated). Without a tail-catch the detached
+    // promise becomes an unhandled rejection — Bun and `--unhandled-
+    // rejections=strict` Node will terminate the bot.
+    const promise = executeClaudeCommand(session, cmdName, cmdArgs, ctx).catch((err: unknown) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      sessionLog(session).warn(`!${cmdName} dispatch failed: ${msg}`);
+    });
+    if (SERIALIZED_COMMANDS.has(cmdName)) {
+      await promise;
+    }
+    remaining = removeCommandFromText(remaining, parsed);
 
-    // Execute the command asynchronously
-    executeClaudeCommand(session, parsed.command, parsed.args || '', ctx);
-
-    // Remove the command from the displayed text
-    return removeCommandFromText(text, parsed);
+    if (RESPAWNING_COMMANDS.has(parsed.command)) break;
   }
-
-  return text;
+  return remaining;
 }
 
 /**
@@ -118,7 +167,131 @@ async function executeClaudeCommand(
       // Claude can report bugs it encounters
       await reportBug(session, args, session.startedBy, ctx);
       break;
+
+    case 'attach':
+      await attachFile(session, args, ctx);
+      break;
   }
+}
+
+/**
+ * Resolve a Claude-supplied path, validate it under the session's working
+ * directory (or worktree path), enforce the size cap, then upload + post the
+ * file. Result returned to Claude in <command-result>. The path is *resolved*
+ * — including symlink expansion via realpath — before the prefix check so
+ * that `output/../../../etc/passwd` cannot escape the working directory.
+ *
+ * Exported for unit tests that exercise the validation logic directly.
+ */
+export async function attachFile(
+  session: Session,
+  rawPath: string,
+  ctx: SessionContext,
+): Promise<void> {
+  const sendResult = (body: string): void => {
+    if (session.claude?.isRunning()) {
+      session.claude.sendMessage(`<command-result command="!attach">\n${body}\n</command-result>`);
+    }
+  };
+
+  // executeClaudeCommand already posted "🤖 Claude executed: !attach <path>"
+  // to the channel. If we then refuse the request, users would otherwise see
+  // that visibility line without any follow-up explaining why nothing
+  // attached. failAttach posts a user-visible error AND tells Claude — both
+  // sides of the conversation see the same reason.
+  const failAttach = async (reason: string, userReason?: string): Promise<void> => {
+    sendResult(`Error: ${reason}`);
+    await postError(session, userReason ?? reason);
+  };
+
+  if (ctx.config.attachmentsEnabled === false) {
+    await failAttach(
+      'file attachments are disabled in this deployment',
+      `${rawPath ? `\`${rawPath}\`` : 'file'}: attachments disabled in this deployment`,
+    );
+    return;
+  }
+
+  if (!rawPath || !rawPath.trim()) {
+    await failAttach('!attach requires a path argument');
+    return;
+  }
+
+  const { resolve: pathResolve, isAbsolute, sep } = await import('path');
+  const { promises: fsp, statSync } = await import('fs');
+
+  // Anchor relative paths at the worktree path when the session is inside a
+  // worktree, otherwise at the session's working directory. Both are valid
+  // roots — Claude is allowed to write anywhere under them.
+  const root = session.worktreeInfo?.worktreePath ?? session.workingDir;
+  const candidate = isAbsolute(rawPath) ? rawPath : pathResolve(root, rawPath);
+
+  let realRoot: string;
+  let realCandidate: string;
+  try {
+    realRoot = await fsp.realpath(root);
+    realCandidate = await fsp.realpath(candidate);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await failAttach(`cannot resolve path \`${rawPath}\`: ${msg}`);
+    return;
+  }
+
+  // Containment check — the realpath must equal `realRoot` or live inside a
+  // descendant directory. Comparing with `+ sep` prevents the
+  // `/repo` vs `/repo-other` false positive.
+  const rootWithSep = realRoot.endsWith(sep) ? realRoot : realRoot + sep;
+  if (realCandidate !== realRoot && !realCandidate.startsWith(rootWithSep)) {
+    await failAttach(`\`${rawPath}\` is outside the working directory`);
+    return;
+  }
+
+  let size: number;
+  try {
+    const stat = statSync(realCandidate);
+    if (!stat.isFile()) {
+      await failAttach(`\`${rawPath}\` is not a regular file`);
+      return;
+    }
+    size = stat.size;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await failAttach(`cannot stat \`${rawPath}\`: ${msg}`);
+    return;
+  }
+
+  const cap = ctx.config.attachmentsMaxBytes ?? 25_000_000;
+  if (size > cap) {
+    await failAttach(
+      `file is ${formatBytes(size)} but the limit is ${formatBytes(cap)}; upload it manually instead`,
+    );
+    return;
+  }
+
+  try {
+    const formatter = session.platform.getFormatter();
+    const fileLine = `📎 ${formatter.formatBold('Attached:')} ${formatter.formatCode(rawPath)} ${formatter.formatItalic(`(${formatBytes(size)})`)}`;
+    await session.platform.createPost(fileLine, session.threadId, { filePaths: [realCandidate] });
+    sendResult(`Attached ${rawPath} (${formatBytes(size)}) to thread`);
+    sessionLog(session).info(`📎 Attached ${rawPath} (${formatBytes(size)}) to thread`);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    sessionLog(session).warn(`📎 Attach failed for ${rawPath}: ${msg}`);
+    sendResult(`Error: upload failed: ${msg}`);
+    await postError(session, `Failed to attach \`${rawPath}\`: ${msg}`);
+  }
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ['KB', 'MB', 'GB'];
+  let size = bytes / 1024;
+  let unit = 0;
+  while (size >= 1024 && unit < units.length - 1) {
+    size /= 1024;
+    unit++;
+  }
+  return `${size.toFixed(1)} ${units[unit]}`;
 }
 
 /**
