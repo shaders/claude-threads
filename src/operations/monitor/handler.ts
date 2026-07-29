@@ -27,6 +27,8 @@ export interface SessionMonitorOptions {
   getSessionCount: () => number;
   /** Update sticky message */
   updateStickyMessage: () => Promise<void>;
+  /** Optional: write the health snapshot each tick. */
+  writeHealth?: () => Promise<void>;
 }
 
 /**
@@ -44,6 +46,8 @@ export class SessionMonitor {
   private readonly getContext: () => SessionContext;
   private readonly getSessionCount: () => number;
   private readonly updateStickyMessage: () => Promise<void>;
+  /** Heartbeat for an outside watcher; see operations/health/writer.ts. */
+  private readonly writeHealth?: () => Promise<void>;
 
   private timer: ReturnType<typeof setInterval> | null = null;
   private isRunning = false;
@@ -54,6 +58,7 @@ export class SessionMonitor {
     this.getContext = options.getContext;
     this.getSessionCount = options.getSessionCount;
     this.updateStickyMessage = options.updateStickyMessage;
+    this.writeHealth = options.writeHealth;
   }
 
   /**
@@ -91,6 +96,11 @@ export class SessionMonitor {
    * Run a single check cycle.
    */
   private async runCheck(): Promise<void> {
+    // Heartbeat first, and before anything that can throw: its whole value is
+    // being written on every tick a healthy process manages to reach. A stale
+    // file is the signal, so it must not depend on the rest of the cycle.
+    await this.writeHealth?.();
+
     // Check for idle sessions that need to be timed out
     await lifecycle.cleanupIdleSessions(this.sessionTimeoutMs, this.getContext());
 

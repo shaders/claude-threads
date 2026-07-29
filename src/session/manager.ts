@@ -31,6 +31,7 @@ import * as streaming from '../operations/streaming/index.js';
 import * as events from '../operations/events/index.js';
 import * as commands from '../operations/commands/index.js';
 import * as lifecycle from './lifecycle.js';
+import { buildHealthSnapshot, writeHealthSnapshot } from '../operations/health/writer.js';
 import { CHAT_PLATFORM_PROMPT } from './lifecycle.js';
 import * as worktreeModule from '../operations/worktree/index.js';
 import * as contextPrompt from '../operations/context-prompt/index.js';
@@ -207,6 +208,7 @@ export class SessionManager extends EventEmitter {
       getContext: () => this.getContext(),
       getSessionCount: () => this.registry.size,
       updateStickyMessage: () => this.updateStickyMessage(),
+      writeHealth: () => this.writeHealthSnapshot(),
     });
 
     this.backgroundCleanup = new CleanupScheduler({
@@ -765,6 +767,28 @@ export class SessionManager extends EventEmitter {
   // ---------------------------------------------------------------------------
   // Sticky Channel Message
   // ---------------------------------------------------------------------------
+
+  /**
+   * Write the heartbeat an outside watcher polls. Only the bot knows these
+   * numbers; host facts are the watcher's own business (see health/writer.ts).
+   */
+  private async writeHealthSnapshot(): Promise<void> {
+    let processing = 0;
+    for (const session of this.registry.getSessions().values()) {
+      if (session.isProcessing) processing++;
+    }
+    await writeHealthSnapshot(buildHealthSnapshot({
+      maxSessions: this.limits.maxSessions,
+      activeSessions: this.registry.size,
+      processingSessions: processing,
+      accounts: this.accountPool.status().map((a) => ({
+        id: a.id,
+        coolingUntil: a.coolingUntil,
+        usagePercent: a.usagePercent,
+        activeSessions: a.activeSessions,
+      })),
+    }));
+  }
 
   private async updateStickyMessage(): Promise<void> {
     const overheadByPlatform = new Map<string, OverheadVisibility>();

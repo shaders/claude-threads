@@ -124,3 +124,66 @@ describe('SessionMonitor', () => {
     });
   });
 });
+
+/**
+ * The heartbeat is only worth anything if it lands on every tick a healthy
+ * process manages to reach — an outside watcher reads its staleness to decide the
+ * bot is wedged. So it runs before the rest of the cycle, and a cycle that throws
+ * later must not have skipped it.
+ */
+describe('SessionMonitor — health heartbeat', () => {
+  let monitor: SessionMonitor;
+  afterEach(() => monitor?.stop());
+
+  it('writes the heartbeat on every check', async () => {
+    const writeHealth = mock(async () => {});
+    monitor = new SessionMonitor({
+      intervalMs: 5,
+      sessionTimeoutMs: 1800000,
+      sessionWarningMs: 300000,
+      getContext: () => createMockContext(),
+      getSessionCount: () => 0,
+      updateStickyMessage: async () => {},
+      writeHealth,
+    });
+
+    monitor.start();
+    await new Promise((r) => setTimeout(r, 40));
+
+    expect(writeHealth.mock.calls.length).toBeGreaterThan(1);
+  });
+
+  it('still writes it when the rest of the cycle blows up', async () => {
+    const writeHealth = mock(async () => {});
+    monitor = new SessionMonitor({
+      intervalMs: 5,
+      sessionTimeoutMs: 1800000,
+      sessionWarningMs: 300000,
+      // cleanupIdleSessions reads ctx.state.sessions — this makes it throw.
+      getContext: () => ({} as never),
+      getSessionCount: () => 0,
+      updateStickyMessage: async () => {},
+      writeHealth,
+    });
+
+    monitor.start();
+    await new Promise((r) => setTimeout(r, 40));
+
+    expect(writeHealth.mock.calls.length).toBeGreaterThan(0);
+  });
+
+  it('runs without a heartbeat callback at all', async () => {
+    monitor = new SessionMonitor({
+      intervalMs: 5,
+      sessionTimeoutMs: 1800000,
+      sessionWarningMs: 300000,
+      getContext: () => createMockContext(),
+      getSessionCount: () => 0,
+      updateStickyMessage: async () => {},
+    });
+
+    monitor.start();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(true).toBe(true); // no throw
+  });
+});
