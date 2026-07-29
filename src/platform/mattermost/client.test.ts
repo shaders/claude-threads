@@ -394,3 +394,68 @@ describe('MattermostClient HTTP methods', () => {
     expect(attempts).toBe(3);
   }, 10_000);
 });
+
+/**
+ * Recovery replays a backlog. Live traffic arrives one post at a time, so
+ * `emit`'s fire-and-forget listeners are fine there; a backlog handed over in a
+ * loop is a stampede — every post starting or resuming a session at once, right
+ * after the reconnect that a struggling host caused.
+ */
+describe('MattermostClient missed-message recovery', () => {
+  function postsAfterResponder(): FetchResponder {
+    return (url: string) => {
+      if (url.includes('/posts?after=')) {
+        return jsonResponse({
+          order: ['p-3', 'p-2', 'p-1'],
+          posts: {
+            'p-1': { id: 'p-1', channel_id: 'c-123', user_id: 'u-1', message: 'first', root_id: 't', create_at: 100 },
+            'p-2': { id: 'p-2', channel_id: 'c-123', user_id: 'u-1', message: 'second', root_id: 't', create_at: 200 },
+            'p-3': { id: 'p-3', channel_id: 'c-123', user_id: 'u-1', message: 'third', root_id: 't', create_at: 300 },
+          },
+        });
+      }
+      if (url.includes('/users/')) {
+        return jsonResponse({ id: 'u-1', username: 'alice' });
+      }
+      return jsonResponse({});
+    };
+  }
+
+  it('hands recovered posts to listeners one at a time, oldest first', async () => {
+    fetchResponder = postsAfterResponder();
+    const client = makeClient();
+    (client as unknown as { lastProcessedPostId: string }).lastProcessedPostId = 'p-0';
+
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const seen: string[] = [];
+    client.on('message', async (post: { message: string }) => {
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      seen.push(post.message);
+      inFlight--;
+    });
+
+    await (client as unknown as { recoverMissedMessages: () => Promise<void> }).recoverMissedMessages();
+
+    expect(maxInFlight).toBe(1);
+    expect(seen).toEqual(['first', 'second', 'third']);
+  });
+
+  it('keeps replaying after a listener throws', async () => {
+    fetchResponder = postsAfterResponder();
+    const client = makeClient();
+    (client as unknown as { lastProcessedPostId: string }).lastProcessedPostId = 'p-0';
+
+    const seen: string[] = [];
+    client.on('message', async (post: { message: string }) => {
+      if (post.message === 'second') throw new Error('handler blew up');
+      seen.push(post.message);
+    });
+
+    await (client as unknown as { recoverMissedMessages: () => Promise<void> }).recoverMissedMessages();
+
+    expect(seen).toEqual(['first', 'third']);
+  });
+});

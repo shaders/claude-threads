@@ -247,9 +247,20 @@ describe('resolveLimits — flushDelayMs tunable', () => {
   });
 
   it('preserves defaults for unset siblings when flushDelayMs is set', () => {
-    const r = resolveLimits({ flushDelayMs: 123 });
-    expect(r.maxSessions).toBe(LIMITS_DEFAULTS.maxSessions);
-    expect(r.sessionTimeoutMinutes).toBe(LIMITS_DEFAULTS.sessionTimeoutMinutes);
+    // resolveLimits falls back to MAX_SESSIONS / SESSION_TIMEOUT_MS, which the
+    // fleet's systemd unit sets — with them inherited, this asserts the host's
+    // config instead of the defaults.
+    const inherited = { max: process.env.MAX_SESSIONS, timeout: process.env.SESSION_TIMEOUT_MS };
+    delete process.env.MAX_SESSIONS;
+    delete process.env.SESSION_TIMEOUT_MS;
+    try {
+      const r = resolveLimits({ flushDelayMs: 123 });
+      expect(r.maxSessions).toBe(LIMITS_DEFAULTS.maxSessions);
+      expect(r.sessionTimeoutMinutes).toBe(LIMITS_DEFAULTS.sessionTimeoutMinutes);
+    } finally {
+      if (inherited.max !== undefined) process.env.MAX_SESSIONS = inherited.max;
+      if (inherited.timeout !== undefined) process.env.SESSION_TIMEOUT_MS = inherited.timeout;
+    }
   });
 });
 

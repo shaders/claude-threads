@@ -220,6 +220,30 @@ export abstract class BasePlatformClient extends EventEmitter implements Platfor
    */
   protected abstract recoverMissedMessages(): Promise<void>;
 
+  /**
+   * Hand one recovered post to the 'message' listeners and wait for them.
+   *
+   * `emit` fires listeners without awaiting them, which is right for live
+   * traffic: posts arrive one at a time, at human pace. Recovery hands over a
+   * whole backlog in a loop, and unawaited handlers turn it into a stampede —
+   * dozens of session starts in flight together, each spawning a CLI, right
+   * after a reconnect that a struggling host probably caused (2026-07-29: 65
+   * posts replayed across five platforms in one second). Awaiting also makes
+   * the oldest-first sort in the caller mean what it says.
+   */
+  protected async deliverRecoveredMessage(
+    post: PlatformPost,
+    user: PlatformUser | null
+  ): Promise<void> {
+    for (const listener of this.listeners('message')) {
+      try {
+        await (listener as (p: PlatformPost, u: PlatformUser | null) => unknown)(post, user);
+      } catch (err) {
+        log.warn(`Recovered-message listener failed for post ${post.id}: ${err}`);
+      }
+    }
+  }
+
   // ============================================================================
   // Shared Implementations
   // ============================================================================

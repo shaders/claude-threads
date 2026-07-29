@@ -752,13 +752,14 @@ export class MattermostClient extends BasePlatformClient {
 
     log.info(`Recovered ${missedPosts.length} missed message(s)`);
 
-    // Re-emit each missed post as if it just arrived
+    // Re-emit each missed post as if it just arrived, one at a time — see
+    // deliverRecoveredMessage for why the backlog must not go out in parallel.
     for (const post of missedPosts) {
       // Update lastProcessedPostId as we process each post
       this.lastProcessedPostId = post.id;
 
       const user = await this.getUser(post.userId);
-      this.emit('message', post, user);
+      await this.deliverRecoveredMessage(post, user);
 
       // Also emit channel_post for top-level posts (not thread replies)
       if (!post.rootId) {
