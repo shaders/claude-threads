@@ -426,3 +426,103 @@ describe('AccountPool > usageProbedAt', () => {
     expect(pool.status().find((s) => s.id === 'b')!.usageProbedAt).toBeNull();
   });
 });
+
+/**
+ * Cost and rate-limit history — what the status board shows INSTEAD of
+ * subscription percentages. Those turned out to be unobtainable: the CLI renders
+ * `/usage` only in interactive mode, and the endpoint behind it refuses the
+ * long-lived setup-tokens these accounts authenticate with. So the board reports
+ * what the bot can measure itself: money spent, and limits actually hit.
+ */
+describe('AccountPool > cost accounting', () => {
+  const accounts = [{ id: 'a', home: '/tmp/a' }, { id: 'b', home: '/tmp/b' }];
+
+  it('accumulates the cost of finished sessions per account', () => {
+    const pool = new AccountPool(accounts);
+    pool.recordFinishedCost('a', 1.25);
+    pool.recordFinishedCost('a', 0.75);
+    pool.recordFinishedCost('b', 3);
+
+    const byId = new Map(pool.status().map((s) => [s.id, s]));
+    expect(byId.get('a')!.finishedCostUsd).toBe(2);
+    expect(byId.get('b')!.finishedCostUsd).toBe(3);
+  });
+
+  /** A bogus id must not create a phantom account in the status list. */
+  it('ignores unknown accounts and non-positive amounts', () => {
+    const pool = new AccountPool(accounts);
+    pool.recordFinishedCost('nope', 5);
+    pool.recordFinishedCost('a', 0);
+    pool.recordFinishedCost('a', -1);
+    pool.recordFinishedCost('a', NaN);
+
+    expect(pool.status().map((s) => s.id)).toEqual(['a', 'b']);
+    expect(pool.status()[0].finishedCostUsd).toBe(0);
+  });
+
+  /** A dollar figure without its window is not a fact — the board needs the start. */
+  it('reports when accounting started', () => {
+    const before = Date.now();
+    const pool = new AccountPool(accounts);
+    expect(pool.costCountingSince()).toBeGreaterThanOrEqual(before);
+    expect(pool.costCountingSince()).toBeLessThanOrEqual(Date.now());
+  });
+});
+
+describe('AccountPool > rate-limit history', () => {
+  const accounts = [{ id: 'a', home: '/tmp/a' }];
+
+  it('counts a hit when an account is marked cooling', () => {
+    const pool = new AccountPool(accounts);
+    pool.markCooling('a', Date.now() + 60_000);
+
+    const s = pool.status()[0];
+    expect(s.rateLimitHits24h).toBe(1);
+    expect(s.lastRateLimitAt).not.toBeNull();
+  });
+
+  /**
+   * Claude reports the same wall on stderr and again in the result event, and a
+   * queued session hits it the moment it retries. Counting raw detections would
+   * report a handful of hits for one limit — the number would then mean nothing.
+   */
+  it('treats detections within a minute as one episode', () => {
+    setSystemTime(new Date('2026-07-30T10:00:00Z'));
+    const pool = new AccountPool(accounts);
+    pool.markCooling('a', Date.now() + 60_000);
+    setSystemTime(new Date('2026-07-30T10:00:30Z'));
+    pool.markCooling('a', Date.now() + 120_000);
+    expect(pool.status()[0].rateLimitHits24h).toBe(1);
+
+    // Past the minute it is a new wall.
+    setSystemTime(new Date('2026-07-30T10:02:00Z'));
+    pool.markCooling('a', Date.now() + 60_000);
+    expect(pool.status()[0].rateLimitHits24h).toBe(2);
+    setSystemTime();
+  });
+
+  /**
+   * The count is a 24h window, but "last hit" is not: an account limited 30h ago
+   * read off the trimmed list would report "never" — the same answer as an
+   * account that has never been limited at all, which is the opposite diagnosis.
+   */
+  it('drops old hits from the 24h count but still remembers the last one', () => {
+    setSystemTime(new Date('2026-07-29T04:00:00Z'));
+    const pool = new AccountPool(accounts);
+    pool.markCooling('a', Date.now() + 60_000);
+    const oldHit = Date.now();
+
+    setSystemTime(new Date('2026-07-30T10:00:00Z')); // +30h
+    const s = pool.status()[0];
+    expect(s.rateLimitHits24h).toBe(0);
+    expect(s.lastRateLimitAt).toBe(oldHit);
+    setSystemTime();
+  });
+
+  it('reports a clean account as never limited', () => {
+    const pool = new AccountPool(accounts);
+    const s = pool.status()[0];
+    expect(s.rateLimitHits24h).toBe(0);
+    expect(s.lastRateLimitAt).toBeNull();
+  });
+});

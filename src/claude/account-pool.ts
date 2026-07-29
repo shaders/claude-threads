@@ -78,6 +78,26 @@ export interface AccountPoolStatus {
   } | null;
   /** When this account's usage was last probed (epoch ms), null if never. */
   usageProbedAt: number | null;
+  /**
+   * Dollars spent on this account by sessions that have already finished, since
+   * the pool was created. Live sessions are NOT included — their cost is still
+   * moving, and the caller that can see them adds it at snapshot time.
+   *
+   * This exists because the subscription percentages `/usage` was supposed to
+   * provide are not obtainable: the CLI only renders that panel interactively,
+   * and the endpoint behind it refuses long-lived setup-tokens. Money actually
+   * spent is the one consumption number the bot can measure on its own.
+   */
+  finishedCostUsd: number;
+  /**
+   * How many times this account was rate-limited in the last 24h, and when it
+   * last happened (epoch ms, null = never seen).
+   *
+   * This is the starvation signal the percentages were wanted for. A percentage
+   * predicts exhaustion; this records it — less pretty, and it cannot be wrong.
+   */
+  rateLimitHits24h: number;
+  lastRateLimitAt: number | null;
 }
 
 /** Options that steer account selection. */
@@ -104,6 +124,15 @@ export class AccountPool {
    * setUsage stays the only writer.
    */
   private readonly usageProbedAt: Map<string, number> = new Map();
+  /** Dollars from sessions that already ended, per account, since pool creation. */
+  private readonly finishedCost: Map<string, number> = new Map();
+  /**
+   * Timestamps of rate-limit hits per account. Trimmed to a 24h window on write,
+   * so the list cannot grow without bound on an account that is limited all day.
+   */
+  private readonly rateLimitHits: Map<string, number[]> = new Map();
+  /** When accounting started — a cost figure means nothing without its window. */
+  private readonly countingSince: number = Date.now();
   /** Rotating scan start, so accounts tied on score+active are cycled fairly. */
   private rrCursor = 0;
 
@@ -302,6 +331,41 @@ export class AccountPool {
       const minutes = Math.ceil((untilEpochMs - Date.now()) / 60000);
       log.info(`Account "${accountId}" cooling for ~${minutes}min`);
     }
+    this.recordRateLimitHit(accountId);
+  }
+
+  /**
+   * One rate-limit EPISODE, not one detection. Claude reports the same limit on
+   * stderr and again in the result event, and a queued session hits it as soon as
+   * it retries, so counting raw detections would report a handful of hits for a
+   * single wall. Anything within a minute of the last hit is that same wall.
+   */
+  private recordRateLimitHit(accountId: string): void {
+    const now = Date.now();
+    const hits = this.rateLimitHits.get(accountId) ?? [];
+    const last = hits[hits.length - 1];
+    if (last !== undefined && now - last < 60_000) return;
+    hits.push(now);
+    // Trim here rather than at read time: the read path is a status snapshot that
+    // must stay cheap and side-effect free.
+    const cutoff = now - 24 * 60 * 60 * 1000;
+    this.rateLimitHits.set(accountId, hits.filter((t) => t >= cutoff));
+  }
+
+  /**
+   * Add the final cost of a session that just ended. Called at release, because
+   * that is the only moment the total is both complete and still reachable — the
+   * session object is about to be dropped, and nothing else remembers it.
+   */
+  recordFinishedCost(accountId: string, usd: number): void {
+    if (!this.byId.has(accountId)) return;
+    if (!Number.isFinite(usd) || usd <= 0) return;
+    this.finishedCost.set(accountId, (this.finishedCost.get(accountId) ?? 0) + usd);
+  }
+
+  /** When cost accounting started (epoch ms). Resets with the process. */
+  costCountingSince(): number {
+    return this.countingSince;
   }
 
   /** Look up an account by id. Returns undefined for unknown ids. */
@@ -331,6 +395,14 @@ export class AccountPool {
           }
           : null,
         usageProbedAt: this.usageProbedAt.get(acc.id) ?? null,
+        finishedCostUsd: this.finishedCost.get(acc.id) ?? 0,
+        rateLimitHits24h: (this.rateLimitHits.get(acc.id) ?? [])
+          .filter((t) => t >= now - 24 * 60 * 60 * 1000).length,
+        // Не обрезано по 24ч, в отличие от счётчика рядом: «упирался 30ч назад» —
+        // это информация, а «никогда» — противоположный диагноз. Держится это без
+        // отдельной карты: обрезка идёт на ЗАПИСИ и всегда после push, поэтому
+        // самый свежий момент из списка не выпадает, а окно фильтруется на чтении.
+        lastRateLimitAt: (this.rateLimitHits.get(acc.id) ?? []).at(-1) ?? null,
       };
     });
   }

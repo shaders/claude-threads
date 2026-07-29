@@ -16,12 +16,16 @@ const ACCOUNTS = [
     id: 'bebop', coolingUntil: null, usagePercent: 42, activeSessions: 3,
     sessionPct: 12, weekPct: 42, weekPerModelPct: 71, sessionResetsAt: 'Jul 29 at 9pm',
     weekResetsAt: 'Aug 2 at 4pm', usageProbedAt: 1_785_300_000_000,
+    costUsd: 4.1, rateLimitHits24h: 0, lastRateLimitAt: null,
   },
   {
     // Never probed: every window is null, and that is different from "0% used".
     id: 'bebop2', coolingUntil: 1_800_000_000_000, usagePercent: 100, activeSessions: 0,
     sessionPct: null, weekPct: null, weekPerModelPct: null, sessionResetsAt: null,
     weekResetsAt: null, usageProbedAt: null,
+    // Упирался дважды за сутки, последний раз — 30ч назад: окно 24ч этот момент
+    // уже не содержит, а lastRateLimitAt обязан его помнить.
+    costUsd: 0, rateLimitHits24h: 2, lastRateLimitAt: 1_785_200_000_000,
   },
 ];
 
@@ -31,15 +35,15 @@ describe('buildHealthSnapshot', () => {
       maxSessions: 15,
       activeSessions: 4,
       processingSessions: 1,
-      stalestProcessingSeconds: 42,
+      stalestProcessingSeconds: 42, costSince: 1_785_000_000_000,
       accounts: ACCOUNTS,
       now: new Date('2026-07-29T10:00:00.000Z'),
       pid: 4242,
     });
 
     expect(Object.keys(snap).sort()).toEqual([
-      'accounts', 'activeSessions', 'maxSessions', 'pid', 'processingSessions',
-      'stalestProcessingSeconds', 'ts',
+      'accounts', 'activeSessions', 'costSince', 'maxSessions', 'pid',
+      'processingSessions', 'stalestProcessingSeconds', 'ts',
     ]);
     expect(snap.ts).toBe('2026-07-29T10:00:00.000Z');
     expect(snap.pid).toBe(4242);
@@ -50,7 +54,7 @@ describe('buildHealthSnapshot', () => {
   it('stamps the write time in ISO 8601', () => {
     const snap = buildHealthSnapshot({
       maxSessions: 1, activeSessions: 0, processingSessions: 0,
-      stalestProcessingSeconds: null, accounts: [],
+      stalestProcessingSeconds: null, costSince: 1_785_000_000_000, accounts: [],
     });
     expect(new Date(snap.ts).toISOString()).toBe(snap.ts);
   });
@@ -63,7 +67,7 @@ describe('writeHealthSnapshot', () => {
 
   const snap = () => buildHealthSnapshot({
     maxSessions: 15, activeSessions: 2, processingSessions: 0,
-    stalestProcessingSeconds: null, accounts: ACCOUNTS,
+    stalestProcessingSeconds: null, costSince: 1_785_000_000_000, accounts: ACCOUNTS,
   });
 
   it('writes parseable JSON and leaves no temp file behind', async () => {
@@ -83,7 +87,7 @@ describe('writeHealthSnapshot', () => {
     await writeHealthSnapshot(snap(), path);
     await writeHealthSnapshot(buildHealthSnapshot({
       maxSessions: 15, activeSessions: 9, processingSessions: 1,
-      stalestProcessingSeconds: 5, accounts: [],
+      stalestProcessingSeconds: 5, costSince: 1_785_000_000_000, accounts: [],
     }), path);
 
     expect(JSON.parse(await readFile(path, 'utf8')).activeSessions).toBe(9);
@@ -117,7 +121,7 @@ describe('stalestProcessingSeconds', () => {
   it('is null when nothing is mid-turn', () => {
     const snap = buildHealthSnapshot({
       maxSessions: 15, activeSessions: 3, processingSessions: 0,
-      stalestProcessingSeconds: null, accounts: [],
+      stalestProcessingSeconds: null, costSince: 1_785_000_000_000, accounts: [],
     });
     expect(snap.stalestProcessingSeconds).toBeNull();
   });
@@ -128,7 +132,7 @@ describe('stalestProcessingSeconds', () => {
       const path = join(dir, 'health.json');
       await writeHealthSnapshot(buildHealthSnapshot({
         maxSessions: 15, activeSessions: 1, processingSessions: 1,
-        stalestProcessingSeconds: 2400, accounts: [],
+        stalestProcessingSeconds: 2400, costSince: 1_785_000_000_000, accounts: [],
       }), path);
 
       const parsed = JSON.parse(await readFile(path, 'utf8'));

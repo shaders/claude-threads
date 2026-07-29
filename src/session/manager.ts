@@ -427,7 +427,10 @@ export class SessionManager extends EventEmitter {
         this.accountPool.acquire(preferredId, threadId, opts),
       refreshClaudeAccountUsage: () => this.refreshAccountUsage(),
       getClaudeAccount: (id) => this.accountPool.get(id),
-      releaseClaudeAccount: (id) => this.accountPool.release(id),
+      releaseClaudeAccount: (id, finalCostUsd) => {
+        this.accountPool.release(id);
+        if (finalCostUsd) this.accountPool.recordFinishedCost(id, finalCostUsd);
+      },
       markClaudeAccountCooling: (id, untilMs) => this.accountPool.markCooling(id, untilMs),
       getClaudeAccountPoolStatus: () => this.accountPool.status(),
 
@@ -800,7 +803,17 @@ export class SessionManager extends EventEmitter {
     let processing = 0;
     let stalest: number | null = null;
     const now = Date.now();
+    // Cost of sessions still running, per account. The pool only knows what
+    // finished sessions spent — it never sees a live total, which keeps moving.
+    // Summing both here is what makes the board's figure current instead of
+    // lagging by however long the busiest thread happens to run.
+    const liveCost = new Map<string, number>();
     for (const session of this.registry.getSessions().values()) {
+      const accountId = session.claudeAccountId;
+      const spent = session.usageStats?.totalCostUSD ?? 0;
+      if (accountId && spent > 0) {
+        liveCost.set(accountId, (liveCost.get(accountId) ?? 0) + spent);
+      }
       if (!session.isProcessing) continue;
       processing++;
       // lastActivityAt is bumped by posts and agent events, so its age under
@@ -813,6 +826,7 @@ export class SessionManager extends EventEmitter {
       activeSessions: this.registry.size,
       processingSessions: processing,
       stalestProcessingSeconds: stalest,
+      costSince: this.accountPool.costCountingSince(),
       accounts: this.accountPool.status().map((a) => ({
         id: a.id,
         coolingUntil: a.coolingUntil,
@@ -824,6 +838,9 @@ export class SessionManager extends EventEmitter {
         sessionResetsAt: a.usage?.sessionResetsAt ?? null,
         weekResetsAt: a.usage?.weekResetsAt ?? null,
         usageProbedAt: a.usageProbedAt,
+        costUsd: a.finishedCostUsd + (liveCost.get(a.id) ?? 0),
+        rateLimitHits24h: a.rateLimitHits24h,
+        lastRateLimitAt: a.lastRateLimitAt,
       })),
     }));
   }
