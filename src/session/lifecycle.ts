@@ -1357,7 +1357,7 @@ export async function resumeSession(
 ): Promise<void> {
   if (!state.threadId || !state.platformId) return resumeSessionUnlocked(state, ctx);
   return withSessionCreationLock(
-    `${state.platformId}:${state.threadId}`,
+    ctx.ops.getSessionId(state.platformId, state.threadId),
     () => resumeSessionUnlocked(state, ctx)
   );
 }
@@ -1379,12 +1379,13 @@ async function resumeSessionUnlocked(
   }
 
   const shortId = state.threadId.substring(0, 8);
+  const sessionId = ctx.ops.getSessionId(state.platformId, state.threadId);
 
   // Another resume (or a fresh start) already put a live session on this
   // thread. Callers check this before calling, but they check outside the
   // lock — a replayed burst of posts has them all pass. Building a second
   // Session here would orphan one of them (see sessionCreationLocks).
-  if (mutableSessions(ctx).has(`${state.platformId}:${state.threadId}`)) {
+  if (mutableSessions(ctx).has(sessionId)) {
     log.debug(`Session ${shortId}... is already active, skipping resume`);
     return;
   }
@@ -1401,7 +1402,7 @@ async function resumeSessionUnlocked(
   const threadPost = await platform.getPost(state.threadId);
   if (!threadPost) {
     log.warn(`Thread ${shortId}... deleted, skipping resume`);
-    ctx.state.sessionStore.remove(`${state.platformId}:${state.threadId}`);
+    ctx.state.sessionStore.remove(sessionId);
     return;
   }
 
@@ -1414,13 +1415,13 @@ async function resumeSessionUnlocked(
   // Verify working directory exists
   if (!existsSync(state.workingDir)) {
     log.warn(`Working directory ${state.workingDir} no longer exists, skipping resume for ${shortId}...`);
-    ctx.state.sessionStore.remove(`${state.platformId}:${state.threadId}`);
+    ctx.state.sessionStore.remove(sessionId);
     const resumeFormatter = platform.getFormatter();
     // Create a temporary pseudo-session just for posting the message
     const tempSession = {
       platform,
       threadId: state.threadId,
-      sessionId: `${state.platformId}:${state.threadId}`,
+      sessionId,
     } as Session;
     await withErrorHandling(
       () => post(tempSession, 'warning', `${resumeFormatter.formatBold('Cannot resume session')} - working directory no longer exists:\n${resumeFormatter.formatCode(state.workingDir)}\n\nPlease start a new session.`),
@@ -1430,7 +1431,6 @@ async function resumeSessionUnlocked(
   }
 
   const platformId = state.platformId;
-  const sessionId = ctx.ops.getSessionId(platformId, state.threadId);
 
   // Resume: honor the bot's current permissionMode, with one asymmetry:
   // - A session that opted into `default` via `!permissions default|interactive`
