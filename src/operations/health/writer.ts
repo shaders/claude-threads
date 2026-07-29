@@ -38,6 +38,16 @@ export interface HealthSnapshot {
   activeSessions: number;
   /** How many of those are mid-turn. */
   processingSessions: number;
+  /**
+   * Seconds since the last activity of the most silent mid-turn session, or null
+   * when nothing is mid-turn.
+   *
+   * This is what separates "working hard" from "wedged", and it needs no new
+   * bookkeeping: lastActivityAt is bumped on every post and every agent event, so
+   * a session that is genuinely working keeps it fresh. A session that reports
+   * isProcessing while this number climbs has stopped producing anything.
+   */
+  stalestProcessingSeconds: number | null;
   accounts: HealthAccount[];
 }
 
@@ -50,6 +60,7 @@ export interface HealthInput {
   maxSessions: number;
   activeSessions: number;
   processingSessions: number;
+  stalestProcessingSeconds: number | null;
   accounts: HealthAccount[];
   now?: Date;
   pid?: number;
@@ -63,6 +74,7 @@ export function buildHealthSnapshot(input: HealthInput): HealthSnapshot {
     maxSessions: input.maxSessions,
     activeSessions: input.activeSessions,
     processingSessions: input.processingSessions,
+    stalestProcessingSeconds: input.stalestProcessingSeconds,
     accounts: input.accounts,
   };
 }

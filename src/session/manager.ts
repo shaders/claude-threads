@@ -774,13 +774,21 @@ export class SessionManager extends EventEmitter {
    */
   private async writeHealthSnapshot(): Promise<void> {
     let processing = 0;
+    let stalest: number | null = null;
+    const now = Date.now();
     for (const session of this.registry.getSessions().values()) {
-      if (session.isProcessing) processing++;
+      if (!session.isProcessing) continue;
+      processing++;
+      // lastActivityAt is bumped by posts and agent events, so its age under
+      // isProcessing is exactly "how long since this turn produced anything".
+      const idleSeconds = Math.max(0, Math.round((now - session.lastActivityAt.getTime()) / 1000));
+      if (stalest === null || idleSeconds > stalest) stalest = idleSeconds;
     }
     await writeHealthSnapshot(buildHealthSnapshot({
       maxSessions: this.limits.maxSessions,
       activeSessions: this.registry.size,
       processingSessions: processing,
+      stalestProcessingSeconds: stalest,
       accounts: this.accountPool.status().map((a) => ({
         id: a.id,
         coolingUntil: a.coolingUntil,

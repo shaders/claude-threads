@@ -22,13 +22,15 @@ describe('buildHealthSnapshot', () => {
       maxSessions: 15,
       activeSessions: 4,
       processingSessions: 1,
+      stalestProcessingSeconds: 42,
       accounts: ACCOUNTS,
       now: new Date('2026-07-29T10:00:00.000Z'),
       pid: 4242,
     });
 
     expect(Object.keys(snap).sort()).toEqual([
-      'accounts', 'activeSessions', 'maxSessions', 'pid', 'processingSessions', 'ts',
+      'accounts', 'activeSessions', 'maxSessions', 'pid', 'processingSessions',
+      'stalestProcessingSeconds', 'ts',
     ]);
     expect(snap.ts).toBe('2026-07-29T10:00:00.000Z');
     expect(snap.pid).toBe(4242);
@@ -38,7 +40,8 @@ describe('buildHealthSnapshot', () => {
   /** Staleness is the whole point: the watcher compares `ts` against its own clock. */
   it('stamps the write time in ISO 8601', () => {
     const snap = buildHealthSnapshot({
-      maxSessions: 1, activeSessions: 0, processingSessions: 0, accounts: [],
+      maxSessions: 1, activeSessions: 0, processingSessions: 0,
+      stalestProcessingSeconds: null, accounts: [],
     });
     expect(new Date(snap.ts).toISOString()).toBe(snap.ts);
   });
@@ -50,7 +53,8 @@ describe('writeHealthSnapshot', () => {
   afterEach(async () => { await rm(dir, { recursive: true, force: true }); });
 
   const snap = () => buildHealthSnapshot({
-    maxSessions: 15, activeSessions: 2, processingSessions: 0, accounts: ACCOUNTS,
+    maxSessions: 15, activeSessions: 2, processingSessions: 0,
+    stalestProcessingSeconds: null, accounts: ACCOUNTS,
   });
 
   it('writes parseable JSON and leaves no temp file behind', async () => {
@@ -69,7 +73,8 @@ describe('writeHealthSnapshot', () => {
     const path = join(dir, 'health.json');
     await writeHealthSnapshot(snap(), path);
     await writeHealthSnapshot(buildHealthSnapshot({
-      maxSessions: 15, activeSessions: 9, processingSessions: 1, accounts: [],
+      maxSessions: 15, activeSessions: 9, processingSessions: 1,
+      stalestProcessingSeconds: 5, accounts: [],
     }), path);
 
     expect(JSON.parse(await readFile(path, 'utf8')).activeSessions).toBe(9);
@@ -91,5 +96,37 @@ describe('healthFilePath', () => {
   /** Runtime state lives beside logs and worktrees, not in .config. */
   it('sits under ~/.claude-threads', () => {
     expect(healthFilePath()).toContain(join('.claude-threads', 'health.json'));
+  });
+});
+
+/**
+ * The field the "stuck session" alert is built on. Null and 0 are different
+ * answers — null means nothing is mid-turn, 0 means something is mid-turn and just
+ * spoke — so the watcher must be able to tell them apart.
+ */
+describe('stalestProcessingSeconds', () => {
+  it('is null when nothing is mid-turn', () => {
+    const snap = buildHealthSnapshot({
+      maxSessions: 15, activeSessions: 3, processingSessions: 0,
+      stalestProcessingSeconds: null, accounts: [],
+    });
+    expect(snap.stalestProcessingSeconds).toBeNull();
+  });
+
+  it('survives the round trip through JSON as a number, not a string', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'health-stale-'));
+    try {
+      const path = join(dir, 'health.json');
+      await writeHealthSnapshot(buildHealthSnapshot({
+        maxSessions: 15, activeSessions: 1, processingSessions: 1,
+        stalestProcessingSeconds: 2400, accounts: [],
+      }), path);
+
+      const parsed = JSON.parse(await readFile(path, 'utf8'));
+      expect(parsed.stalestProcessingSeconds).toBe(2400);
+      expect(typeof parsed.stalestProcessingSeconds).toBe('number');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });
