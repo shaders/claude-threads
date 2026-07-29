@@ -212,6 +212,11 @@ export interface SubagentOp extends BaseOperation {
   readonly subagentType: string;
   /** Whether currently minimized */
   readonly isMinimized?: boolean;
+  /**
+   * Launched with `run_in_background`: the tool_result is an immediate "launched"
+   * ack, so there is no end for us to observe and no elapsed time to show.
+   */
+  readonly isBackground?: boolean;
   /** Result content (on complete) */
   readonly result?: string;
 }
@@ -449,7 +454,7 @@ export function createSubagentOp(
   action: SubagentOp['action'],
   description: string,
   subagentType: string,
-  options?: { isMinimized?: boolean; result?: string }
+  options?: { isMinimized?: boolean; isBackground?: boolean; result?: string }
 ): SubagentOp {
   return {
     type: 'subagent',
@@ -460,6 +465,7 @@ export function createSubagentOp(
     description,
     subagentType,
     isMinimized: options?.isMinimized,
+    isBackground: options?.isBackground,
     result: options?.result,
   };
 }

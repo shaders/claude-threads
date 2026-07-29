@@ -51,8 +51,20 @@ export interface TransformContext {
    * its tool_use opened. Omit to render every tool on its own line.
    */
   toolGroups?: Map<string, string>;
+  /**
+   * toolUseId → subagent launch still waiting for its result, so that result can
+   * close the post the launch opened. Background launches are deliberately
+   * absent (see handleSubagentStart).
+   */
+  subagents?: Map<string, SubagentLaunch>;
   /** Whether to include detailed previews */
   detailed?: boolean;
+}
+
+/** What a subagent's own result needs to know about the launch that opened it. */
+export interface SubagentLaunch {
+  description: string;
+  subagentType: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -79,6 +91,9 @@ export function transformEvent(
 
     case 'tool_result':
       return transformToolResult(event, ctx);
+
+    case 'user':
+      return transformUserToolResults(event, ctx);
 
     case 'result':
       return transformResult(event, ctx);
@@ -286,7 +301,39 @@ function startToolGroup(
 // ---------------------------------------------------------------------------
 
 /**
- * Transform a tool_result event.
+ * The stamp a finished tool call leaves behind: `✓` / `❌ Error`, plus `(41s)`
+ * once it ran long enough to be worth reporting. Consumes the call's start time
+ * and its claim on a rolling line, so call it exactly once per tool_use_id.
+ */
+function takeToolOutcome(
+  toolUseId: string | undefined,
+  isError: boolean | undefined,
+  ctx: TransformContext
+): { status: string; groupKey?: string } {
+  let elapsed = '';
+  if (toolUseId) {
+    const startTime = ctx.toolStartTimes.get(toolUseId);
+    if (startTime) {
+      const secs = Math.round((Date.now() - startTime) / 1000);
+      if (secs >= 3) {
+        elapsed = ` (${secs}s)`;
+      }
+      ctx.toolStartTimes.delete(toolUseId);
+    }
+  }
+
+  const groupKey = toolUseId ? ctx.toolGroups?.get(toolUseId) : undefined;
+  if (groupKey && toolUseId) {
+    ctx.toolGroups?.delete(toolUseId);
+  }
+
+  const icon = isError ? '❌' : '✓';
+  const errorNote = isError ? ' Error' : '';
+  return { status: `${icon}${errorNote}${elapsed}`, groupKey };
+}
+
+/**
+ * Transform a tool_result event (the shape the Codex backend normalizes to).
  */
 function transformToolResult(
   event: ClaudeEvent,
@@ -302,43 +349,63 @@ function transformToolResult(
     is_error?: boolean;
   };
 
+  const { status, groupKey } = takeToolOutcome(result.tool_use_id, result.is_error, ctx);
+
+  const operations: MessageOperation[] = [
+    // Tools with a rolling line get their outcome stamped onto that line instead
+    // of a second `↳` line under it.
+    groupKey
+      ? createAppendContentOp(ctx.sessionId, '', true, { key: groupKey, role: 'result', status })
+      : createAppendContentOp(ctx.sessionId, `  ↳ ${status}`, true),
+    // Tool results are a natural break point - suggest flush
+    createFlushOp(ctx.sessionId, 'tool_complete'),
+  ];
+
+  return operations;
+}
+
+/**
+ * Pick tool outcomes out of a `user` message.
+ *
+ * Claude CLI does not emit the `tool_result` events above — it reports outcomes
+ * as `tool_result` blocks inside `user` messages, which used to fall through to
+ * `default: []`. So nothing ever closed a rolling line (it kept its ⏳ for the
+ * rest of the session) and nothing ever closed a subagent post.
+ *
+ * Only those two are picked up. The `↳` line the Codex path adds for every other
+ * tool stays out of it: a second line under every Edit, Write and MCP call is
+ * the wall of text the rolling line exists to remove.
+ */
+function transformUserToolResults(
+  event: ClaudeEvent,
+  ctx: TransformContext
+): MessageOperation[] {
+  const content = (event.message as { content?: unknown } | undefined)?.content;
+  if (!Array.isArray(content)) return [];
+
   const operations: MessageOperation[] = [];
 
-  // Calculate elapsed time
-  let elapsed = '';
-  if (result.tool_use_id) {
-    const startTime = ctx.toolStartTimes.get(result.tool_use_id);
-    if (startTime) {
-      const secs = Math.round((Date.now() - startTime) / 1000);
-      if (secs >= 3) {
-        elapsed = ` (${secs}s)`;
-      }
-      ctx.toolStartTimes.delete(result.tool_use_id);
+  for (const block of content as Array<{ type?: string; tool_use_id?: string; is_error?: boolean }>) {
+    if (block?.type !== 'tool_result' || !block.tool_use_id) continue;
+
+    const launch = ctx.subagents?.get(block.tool_use_id);
+    const { status, groupKey } = takeToolOutcome(block.tool_use_id, block.is_error, ctx);
+
+    if (groupKey) {
+      operations.push(createAppendContentOp(ctx.sessionId, '', true, {
+        key: groupKey,
+        role: 'result',
+        status,
+      }));
+    }
+
+    if (launch) {
+      ctx.subagents?.delete(block.tool_use_id);
+      operations.push(createSubagentOp(
+        ctx.sessionId, block.tool_use_id, 'complete', launch.description, launch.subagentType
+      ));
     }
   }
-
-  // Format result indicator
-  const icon = result.is_error ? '❌' : '✓';
-  const errorNote = result.is_error ? ' Error' : '';
-
-  // Tools with a rolling line get their outcome stamped onto that line instead
-  // of a second `↳` line under it.
-  const groupKey = result.tool_use_id ? ctx.toolGroups?.get(result.tool_use_id) : undefined;
-  if (groupKey && result.tool_use_id) {
-    ctx.toolGroups?.delete(result.tool_use_id);
-    operations.push(createAppendContentOp(ctx.sessionId, '', true, {
-      key: groupKey,
-      role: 'result',
-      status: `${icon}${errorNote}${elapsed}`,
-    }));
-  } else {
-    operations.push(
-      createAppendContentOp(ctx.sessionId, `  ↳ ${icon}${errorNote}${elapsed}`, true)
-    );
-  }
-
-  // Tool results are a natural break point - suggest flush
-  operations.push(createFlushOp(ctx.sessionId, 'tool_complete'));
 
   return operations;
 }
@@ -405,8 +472,13 @@ function handleSpecialTool(
     case 'TodoWrite':
       return handleTodoWrite(input, ctx);
 
+    // Claude CLI renamed the subagent tool `Task` → `Agent`. Both are accepted:
+    // an unrecognized name falls through to the generic `● **Agent**` line,
+    // which loses the subagent post AND breaks the rolling tool line every time
+    // an agent is launched.
     case 'Task':
-      return handleTaskStart(toolUseId, input, ctx);
+    case 'Agent':
+      return handleSubagentStart(toolUseId, input, ctx);
 
     case 'AskUserQuestion':
       return handleAskUserQuestion(toolUseId, input, ctx);
@@ -446,18 +518,28 @@ function handleTodoWrite(
 }
 
 /**
- * Handle Task tool - start a subagent.
+ * Handle the subagent tool (`Task` / `Agent`) - start a subagent.
+ *
+ * A `run_in_background` launch gets its tool_result back within milliseconds
+ * ("agent launched successfully"), nowhere near the agent's actual end, so it is
+ * not registered for completion — its post says it is running in background
+ * instead of ticking off seconds that mean nothing.
  */
-function handleTaskStart(
+function handleSubagentStart(
   toolUseId: string,
   input: Record<string, unknown>,
   ctx: TransformContext
 ): MessageOperation[] {
   const description = (input.description as string) || (input.prompt as string) || 'Subagent';
   const subagentType = (input.subagent_type as string) || 'general-purpose';
+  const isBackground = input.run_in_background === true;
+
+  if (toolUseId && !isBackground) {
+    ctx.subagents?.set(toolUseId, { description, subagentType });
+  }
 
   return [
-    createSubagentOp(ctx.sessionId, toolUseId, 'start', description, subagentType),
+    createSubagentOp(ctx.sessionId, toolUseId, 'start', description, subagentType, { isBackground }),
   ];
 }
 

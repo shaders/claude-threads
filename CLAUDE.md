@@ -697,10 +697,24 @@ cat ~/.claude/projects/-Users-anneschuth-mattermost-claude-code/SESSION_ID.jsonl
 
 ### Event Flow (src/operations/transformer.ts → MessageManager)
 Claude CLI emits JSON events. The transformer converts them to MessageOperations:
-- `assistant` → `AppendContentOp` (text response)
+- `assistant` → `AppendContentOp` (text response), plus one op per `tool_use` content block
 - `tool_use` → `AppendContentOp` (tool display) or special ops (TaskListOp, QuestionOp, etc.)
 - `tool_result` → `AppendContentOp` (result indicator) + `FlushOp`
+- `user` → tool outcomes only: rolling-line status, subagent completion
 - `result` → `FlushOp` + `StatusUpdateOp` (cost info)
+
+**Which of those a backend actually sends matters.** Claude CLI reports tool
+*calls* as `tool_use` blocks inside `assistant` messages and tool *outcomes* as
+`tool_result` blocks inside `user` messages — it does not send the standalone
+`tool_use` / `tool_result` events. Codex synthesizes those instead. So the
+`tool_result` case is Codex-only, the `user` case is Claude-only, and anything
+new that keys off `event.type === 'tool_use' | 'tool_result'` (the arbiter,
+docs-ping, return-address and bug-report all do) is dead on Claude sessions
+until that is normalized at the backend.
+
+The subagent tool is called **`Agent`**; `Task` is its former name and is still
+accepted. The CLI's `system/init` event advertises `Task` even when every actual
+call says `Agent`, so that list is not a safe source for the name.
 
 ### Message Streaming (src/operations/streaming/handler.ts)
 - Messages are batched and flushed periodically via `FlushOp`

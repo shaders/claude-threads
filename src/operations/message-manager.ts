@@ -13,7 +13,7 @@
 import type { PlatformClient, PlatformPost, PlatformFile } from '../platform/index.js';
 import type { PendingQuestionSet, Session } from '../session/types.js';
 import type { ClaudeEvent } from '../claude/cli.js';
-import { transformEvent, type TransformContext } from './transformer.js';
+import { transformEvent, type SubagentLaunch, type TransformContext } from './transformer.js';
 import {
   ContentExecutor,
   TaskListExecutor,
@@ -168,6 +168,9 @@ export class MessageManager {
   // tool_use opened (see ToolGroupOp)
   private toolGroups: Map<string, string> = new Map();
 
+  // toolUseId → subagent launch awaiting its result (see TransformContext)
+  private subagents: Map<string, SubagentLaunch> = new Map();
+
   // Flush scheduling
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
   private static readonly DEFAULT_FLUSH_DELAY_MS = 500;
@@ -296,6 +299,7 @@ export class MessageManager {
       formatter: this.platform.getFormatter(),
       toolStartTimes: this.toolStartTimes,
       toolGroups: this.toolGroups,
+      subagents: this.subagents,
       detailed: true,
       worktreeInfo: this.worktreePath && this.worktreeBranch
         ? { path: this.worktreePath, branch: this.worktreeBranch }
@@ -1186,6 +1190,7 @@ export class MessageManager {
     this.cancelScheduledFlush();
     this.toolStartTimes.clear();
     this.toolGroups.clear();
+    this.subagents.clear();
     this.contentExecutor.reset();
     this.taskListExecutor.reset();
     this.questionApprovalExecutor.reset();

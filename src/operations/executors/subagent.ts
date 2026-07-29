@@ -12,7 +12,7 @@ import type { PlatformFormatter } from '../../platform/index.js';
 import { MINIMIZE_TOGGLE_EMOJIS, isMinimizeToggleEmoji } from '../../utils/emoji.js';
 import { formatDuration, formatShortId } from '../../utils/format.js';
 import type { SubagentOp } from '../types.js';
-import type { ExecutorContext, SubagentState } from './types.js';
+import type { ActiveSubagent, ExecutorContext, SubagentState } from './types.js';
 import { BaseExecutor, type ExecutorOptions } from './base.js';
 
 /** Update interval for subagent elapsed time (5 seconds) */
@@ -35,16 +35,12 @@ export interface SubagentExecutorOptions extends ExecutorOptions {
 // ---------------------------------------------------------------------------
 
 /**
- * Active subagent metadata.
+ * Whether this subagent still has an elapsed time worth refreshing every 5s.
+ * A background launch never reports back, so ticking it would mean updating its
+ * post for the rest of the session over an end we cannot see.
  */
-interface ActiveSubagent {
-  postId: string;
-  startTime: number;
-  description: string;
-  subagentType: string;
-  isMinimized: boolean;
-  isComplete: boolean;
-  lastUpdateTime: number;
+function isTicking(subagent: ActiveSubagent): boolean {
+  return !subagent.isComplete && !subagent.isBackground;
 }
 
 /**
@@ -147,6 +143,7 @@ export class SubagentExecutor extends BaseExecutor<SubagentState> {
       subagentType: op.subagentType,
       isMinimized: op.isMinimized ?? false,
       isComplete: false,
+      isBackground: op.isBackground ?? false,
       lastUpdateTime: now,
     };
 
@@ -327,7 +324,13 @@ export class SubagentExecutor extends BaseExecutor<SubagentState> {
 
     // Header with elapsed time
     let header = `🤖 ${formatter.formatBold('Subagent')} ${formatter.formatItalic(`(${subagent.subagentType})`)}`;
-    header += subagent.isComplete ? ` ✅ ${elapsed}` : ` ⏳ ${elapsed}`;
+    if (subagent.isComplete) {
+      header += ` ✅ ${elapsed}`;
+    } else if (subagent.isBackground) {
+      header += ` 🚀 ${formatter.formatItalic('running in background')}`;
+    } else {
+      header += ` ⏳ ${elapsed}`;
+    }
 
     if (subagent.isMinimized) {
       return `${header} 🔽`;
@@ -343,11 +346,7 @@ export class SubagentExecutor extends BaseExecutor<SubagentState> {
   private startUpdateTimerIfNeeded(ctx: ExecutorContext): void {
     if (this.state.subagentUpdateTimer) return;
 
-    // Check if there are any active (non-complete) subagents
-    const hasActiveSubagents = Array.from(this.state.activeSubagents.values())
-      .some(s => !s.isComplete);
-
-    if (!hasActiveSubagents) return;
+    if (!Array.from(this.state.activeSubagents.values()).some(isTicking)) return;
 
     this.state.subagentUpdateTimer = setInterval(() => {
       this.updateAllSubagentPosts(ctx);
@@ -368,10 +367,7 @@ export class SubagentExecutor extends BaseExecutor<SubagentState> {
    * Stop the update timer if no more active subagents.
    */
   private stopUpdateTimerIfNoActive(): void {
-    const hasActiveSubagents = Array.from(this.state.activeSubagents.values())
-      .some(s => !s.isComplete);
-
-    if (!hasActiveSubagents) {
+    if (!Array.from(this.state.activeSubagents.values()).some(isTicking)) {
       this.stopUpdateTimer();
     }
   }
@@ -383,8 +379,8 @@ export class SubagentExecutor extends BaseExecutor<SubagentState> {
     const now = Date.now();
 
     for (const [_toolUseId, subagent] of this.state.activeSubagents) {
-      // Skip completed subagents and recently updated ones (debounce)
-      if (subagent.isComplete) continue;
+      // Skip finished/background subagents and recently updated ones (debounce)
+      if (!isTicking(subagent)) continue;
       if (now - subagent.lastUpdateTime < SUBAGENT_UPDATE_INTERVAL_MS - 500) continue;
 
       const message = this.formatSubagentPost(subagent, ctx.formatter);

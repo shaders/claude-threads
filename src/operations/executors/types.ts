@@ -252,19 +252,26 @@ export interface SystemState {
 }
 
 /**
+ * A subagent the thread is showing a post for.
+ */
+export interface ActiveSubagent {
+  postId: string;
+  startTime: number;
+  description: string;
+  subagentType: string;
+  isMinimized: boolean;
+  isComplete: boolean;
+  /** Launched with `run_in_background` — see SubagentOp.isBackground. */
+  isBackground: boolean;
+  lastUpdateTime: number;
+}
+
+/**
  * State managed by the subagent executor.
  */
 export interface SubagentState {
   /** Active subagents: toolUseId -> subagent info */
-  activeSubagents: Map<string, {
-    postId: string;
-    startTime: number;
-    description: string;
-    subagentType: string;
-    isMinimized: boolean;
-    isComplete: boolean;
-    lastUpdateTime: number;
-  }>;
+  activeSubagents: Map<string, ActiveSubagent>;
   /** Timer for updating elapsed times */
   subagentUpdateTimer: ReturnType<typeof setInterval> | null;
 }

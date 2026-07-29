@@ -182,6 +182,31 @@ describe('SubagentExecutor', () => {
       expect(state.activeSubagents.size).toBe(2);
     });
 
+    /**
+     * A `run_in_background` launch has no observable end, so an elapsed time
+     * ticking every 5s would rewrite its post for the rest of the session over
+     * a number that means nothing.
+     */
+    it('shows a background launch as such, with no elapsed-time timer', async () => {
+      const op: SubagentOp = {
+        type: 'subagent',
+        sessionId: 'test:session-1',
+        timestamp: Date.now(),
+        toolUseId: 'tool-bg',
+        action: 'start',
+        description: 'Sweep the repo',
+        subagentType: 'Explore',
+        isBackground: true,
+      };
+
+      await executor.execute(op, ctx);
+
+      const posted = (ctx.platform.createInteractivePost as any).mock.calls[0][0] as string;
+      expect(posted).toContain('🚀');
+      expect(posted).not.toContain('⏳');
+      expect(executor.hasUpdateTimer()).toBe(false);
+    });
+
     it('starts with expanded state by default', async () => {
       const op: SubagentOp = {
         type: 'subagent',
