@@ -301,7 +301,12 @@ export interface SessionOperations {
   getClaudeAccount(accountId: string): ClaudeAccount | undefined;
 
   /** Return an account to the pool when a session ends. No-op for unknown ids. */
-  releaseClaudeAccount(accountId: string): void;
+  /**
+   * Release the account slot and, when the session spent anything, hand over its
+   * FINAL cost — this is the last moment that total is both complete and still
+   * reachable, since the session object is about to be dropped.
+   */
+  releaseClaudeAccount(accountId: string, finalCostUsd?: number): void;
 
   /**
    * Mark an account as rate-limited until the given epoch timestamp. Future

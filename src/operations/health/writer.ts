@@ -50,6 +50,20 @@ export interface HealthAccount {
    * reactions, and so do "no data for hours" and "asked two minutes ago, refused".
    */
   usageProbedAt: number | null;
+  /**
+   * Dollars spent on this account since `costSince`, finished sessions plus the
+   * running total of live ones.
+   *
+   * This is what the board shows INSTEAD of subscription percentages, which
+   * turned out to be unobtainable: the CLI renders `/usage` only interactively,
+   * and the endpoint behind it refuses the long-lived setup-tokens these accounts
+   * use. Money spent is measurable without asking anyone.
+   */
+  costUsd: number;
+  /** Rate-limit episodes in the last 24h — exhaustion recorded, not predicted. */
+  rateLimitHits24h: number;
+  /** Last rate-limit ever (epoch ms), NOT clipped to 24h. Null = never seen. */
+  lastRateLimitAt: number | null;
 }
 
 export interface HealthSnapshot {
@@ -72,6 +86,13 @@ export interface HealthSnapshot {
    * isProcessing while this number climbs has stopped producing anything.
    */
   stalestProcessingSeconds: number | null;
+  /**
+   * When cost accounting started (epoch ms) — the pool is in-memory, so this is
+   * effectively the process start. A dollar figure without its window is not a
+   * fact: "$4.10" reads as alarming or trivial depending on whether it covers ten
+   * minutes or a week, and the reader cannot tell which.
+   */
+  costSince: number;
   accounts: HealthAccount[];
 }
 
@@ -85,6 +106,7 @@ export interface HealthInput {
   activeSessions: number;
   processingSessions: number;
   stalestProcessingSeconds: number | null;
+  costSince: number;
   accounts: HealthAccount[];
   now?: Date;
   pid?: number;
@@ -99,6 +121,7 @@ export function buildHealthSnapshot(input: HealthInput): HealthSnapshot {
     activeSessions: input.activeSessions,
     processingSessions: input.processingSessions,
     stalestProcessingSeconds: input.stalestProcessingSeconds,
+    costSince: input.costSince,
     accounts: input.accounts,
   };
 }

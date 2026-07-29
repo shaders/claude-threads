@@ -282,7 +282,10 @@ async function cleanupSession(
  */
 function releaseAccountIfHeld(session: Session, ctx: SessionContext): void {
   if (session.claudeAccountId) {
-    ctx.ops.releaseClaudeAccount(session.claudeAccountId);
+    // The final total goes with the release: after this the session is gone and
+    // nothing remembers what it spent. Clearing claudeAccountId just below is also
+    // what keeps the live-session sum from counting this cost a second time.
+    ctx.ops.releaseClaudeAccount(session.claudeAccountId, session.usageStats?.totalCostUSD);
     // Guard against double-release: once released, stop tracking the id on
     // the session so a later cleanup path can't decrement again.
     session.claudeAccountId = undefined;
