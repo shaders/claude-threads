@@ -3,7 +3,7 @@
  *
  * Handles tools that affect task/workflow state:
  * - TodoWrite: Task list management (hidden, handled specially)
- * - Task: Subagent spawning (hidden, handled specially)
+ * - Task / Agent: Subagent spawning (hidden, handled specially)
  * - EnterPlanMode: Plan mode entry
  * - ExitPlanMode: Plan approval (hidden, handled specially)
  * - AskUserQuestion: User questions (hidden, handled specially)
@@ -19,7 +19,7 @@ import type { ToolFormatter, ToolFormatResult, ToolInput, ToolFormatOptions } fr
  * Formatter for task-related tools.
  */
 export const taskToolsFormatter: ToolFormatter = {
-  toolNames: ['TodoWrite', 'Task', 'EnterPlanMode', 'ExitPlanMode', 'AskUserQuestion'],
+  toolNames: ['TodoWrite', 'Task', 'Agent', 'EnterPlanMode', 'ExitPlanMode', 'AskUserQuestion'],
 
   format(toolName: string, _input: ToolInput, options: ToolFormatOptions): ToolFormatResult | null {
     const { formatter } = options;
@@ -29,7 +29,9 @@ export const taskToolsFormatter: ToolFormatter = {
         // Hidden - handled specially with task list display
         return { display: null, hidden: true };
 
+      // `Agent` is the current name of the subagent tool, `Task` the older one.
       case 'Task':
+      case 'Agent':
         // Hidden - handled specially with subagent display
         return { display: null, hidden: true };
 

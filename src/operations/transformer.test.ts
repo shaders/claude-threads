@@ -529,6 +529,151 @@ describe('Event Transformer', () => {
 
       expect((ops[0] as { description: string }).description).toBe('Do something');
     });
+
+    /**
+     * Claude CLI renamed the tool `Task` → `Agent`. Under the old name only, an
+     * agent launch fell through to the generic `● **Agent**` content line, which
+     * both lost the subagent post and ended the rolling tool line — so a fan-out
+     * of agents shattered one `💻 Bash ×40` into a line per burst.
+     */
+    it('treats the renamed Agent tool as a subagent launch', () => {
+      const ops = transformEvent({
+        type: 'assistant',
+        message: {
+          content: [{
+            type: 'tool_use',
+            id: 'agent-1',
+            name: 'Agent',
+            input: { description: 'Review MR 88', subagent_type: 'pw-gitlab-code-reviewer' },
+          }],
+        },
+      } as ClaudeEvent, ctx);
+
+      expect(ops.map(op => op.type)).toEqual(['subagent']);
+      const subOp = ops[0] as { toolUseId: string; action: string; subagentType: string };
+      expect(subOp.toolUseId).toBe('agent-1');
+      expect(subOp.action).toBe('start');
+      expect(subOp.subagentType).toBe('pw-gitlab-code-reviewer');
+    });
+
+    it('registers a foreground launch for completion, a background one not', () => {
+      ctx.subagents = new Map();
+
+      const launch = (id: string, background: boolean): ClaudeEvent => ({
+        type: 'tool_use',
+        tool_use: {
+          id,
+          name: 'Agent',
+          input: { description: 'Sweep', subagent_type: 'Explore', run_in_background: background },
+        },
+      } as ClaudeEvent);
+
+      const [fg] = transformEvent(launch('fg', false), ctx) as Array<{ isBackground?: boolean }>;
+      const [bg] = transformEvent(launch('bg', true), ctx) as Array<{ isBackground?: boolean }>;
+
+      expect(fg.isBackground).toBe(false);
+      expect(bg.isBackground).toBe(true);
+      expect([...ctx.subagents.keys()]).toEqual(['fg']);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Tool outcomes carried by `user` messages (how Claude CLI reports them)
+  // ---------------------------------------------------------------------------
+
+  describe('user events', () => {
+    function toolResult(toolUseId: string, isError?: boolean): ClaudeEvent {
+      return {
+        type: 'user',
+        message: { content: [{ type: 'tool_result', tool_use_id: toolUseId, is_error: isError }] },
+      } as ClaudeEvent;
+    }
+
+    /**
+     * Claude CLI never emits the `tool_result` events the Codex backend does, so
+     * this used to fall through to `default: []` — leaving every rolling line
+     * stuck on ⏳ for the rest of the session.
+     */
+    it('stamps a rolling line with the outcome of its tool', () => {
+      ctx.toolGroups = new Map();
+      transformEvent({
+        type: 'tool_use',
+        tool_use: { id: 't1', name: 'Bash', input: { command: 'npm test' } },
+      } as ClaudeEvent, ctx);
+
+      const ops = transformEvent(toolResult('t1'), ctx) as Array<{ toolGroup?: unknown }>;
+
+      expect(ops.length).toBe(1);
+      expect(ops[0].toolGroup).toEqual({ key: 'inspect', role: 'result', status: '✓' });
+      expect(ctx.toolGroups.size).toBe(0);
+    });
+
+    it('reports a failed tool as an error on the same line', () => {
+      ctx.toolGroups = new Map();
+      transformEvent({
+        type: 'tool_use',
+        tool_use: { id: 't1', name: 'Bash', input: { command: 'npm test' } },
+      } as ClaudeEvent, ctx);
+
+      const [op] = transformEvent(toolResult('t1', true), ctx) as Array<{ toolGroup?: { status: string } }>;
+
+      expect(op.toolGroup?.status).toBe('❌ Error');
+    });
+
+    /**
+     * A `↳ ✓` under every Edit, Write and MCP call is the wall of lines the
+     * rolling line exists to remove, so ungrouped tools stay silent here.
+     */
+    it('adds no result line for a tool without a rolling line', () => {
+      ctx.toolGroups = new Map();
+      transformEvent({
+        type: 'tool_use',
+        tool_use: { id: 't2', name: 'Write', input: { file_path: '/tmp/a.ts', content: 'x' } },
+      } as ClaudeEvent, ctx);
+
+      expect(transformEvent(toolResult('t2'), ctx)).toEqual([]);
+    });
+
+    it('closes the post of the subagent whose result came back', () => {
+      ctx.subagents = new Map();
+      transformEvent({
+        type: 'tool_use',
+        tool_use: { id: 'agent-1', name: 'Agent', input: { description: 'Sweep', subagent_type: 'Explore' } },
+      } as ClaudeEvent, ctx);
+
+      const ops = transformEvent(toolResult('agent-1'), ctx);
+
+      expect(ops.map(op => op.type)).toEqual(['subagent']);
+      expect((ops[0] as { action: string; description: string }).action).toBe('complete');
+      expect((ops[0] as { description: string }).description).toBe('Sweep');
+      expect(ctx.subagents.size).toBe(0);
+    });
+
+    it('leaves a background launch open — its ack is not a completion', () => {
+      ctx.subagents = new Map();
+      transformEvent({
+        type: 'tool_use',
+        tool_use: {
+          id: 'agent-bg',
+          name: 'Agent',
+          input: { description: 'Sweep', subagent_type: 'Explore', run_in_background: true },
+        },
+      } as ClaudeEvent, ctx);
+
+      expect(transformEvent(toolResult('agent-bg'), ctx)).toEqual([]);
+    });
+
+    it('ignores user messages that carry no tool results', () => {
+      expect(transformEvent({
+        type: 'user',
+        message: { content: [{ type: 'text', text: 'Base directory for this skill: /skills/foo' }] },
+      } as ClaudeEvent, ctx)).toEqual([]);
+
+      expect(transformEvent({
+        type: 'user',
+        message: { content: 'plain reply from the user' },
+      } as ClaudeEvent, ctx)).toEqual([]);
+    });
   });
 
   describe('AskUserQuestion handling', () => {

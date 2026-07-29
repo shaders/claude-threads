@@ -302,6 +302,39 @@ describe('MessageManager', () => {
       // Result event triggers flush
       expect(platform.createPost).toHaveBeenCalled();
     });
+
+    /**
+     * The bug this guards: an agent launch used to arrive as a generic
+     * `● **Agent**` content line (the tool is called `Agent` now, not `Task`),
+     * and any content ends the rolling tool line. Fanning agents out therefore
+     * broke one `💻 Bash ×40` into a line per burst, each stranded on ⏳.
+     */
+    it('keeps the rolling Bash line collapsed across an agent launch', async () => {
+      const bash = (id: string, command: string) => ({
+        type: 'assistant' as const,
+        message: { content: [{ type: 'tool_use', id, name: 'Bash', input: { command } }] },
+      });
+
+      await manager.handleEvent(bash('b1', 'git status'));
+      await manager.handleEvent({
+        type: 'assistant' as const,
+        message: {
+          content: [{
+            type: 'tool_use',
+            id: 'a1',
+            name: 'Agent',
+            input: { description: 'Review the diff', subagent_type: 'Explore', run_in_background: true },
+          }],
+        },
+      });
+      await manager.handleEvent(bash('b2', 'git diff --stat'));
+      await manager.flush();
+
+      // The agent gets its own post, so the content post keeps one Bash line.
+      expect(platform.createInteractivePost).toHaveBeenCalled();
+      const [content] = (platform.createPost as any).mock.calls.at(-1) as [string];
+      expect(content).toBe('💻 **Bash** ×2 `git diff --stat` ⏳');
+    });
   });
 
   describe('Flush Behavior', () => {
