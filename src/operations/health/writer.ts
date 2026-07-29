@@ -33,12 +33,21 @@ export interface HealthAccount {
    */
   sessionPct: number | null;
   weekPct: number | null;
+  /**
+   * Highest per-model weekly percentage, when `/usage` reported one.
+   *
+   * Carried because it can be the BINDING limit while both other windows look
+   * fine: one model throttled at 95% with 9% used across all models reads as a
+   * healthy account unless this is shown. It is also why `usagePercent` — the
+   * routing score, a max over all three — can exceed both of the other numbers.
+   */
+  weekPerModelPct: number | null;
   sessionResetsAt: string | null;
   weekResetsAt: string | null;
   /**
-   * When these numbers were measured (epoch ms). Load-bearing for a status board:
-   * "0% used" and "measured an hour ago" demand different reactions, and usage is
-   * only probed on a schedule, never continuously.
+   * When the last probe was ATTEMPTED (epoch ms), successful or not. Load-bearing
+   * for a status board: "0% used" and "measured an hour ago" demand different
+   * reactions, and so do "no data for hours" and "asked two minutes ago, refused".
    */
   usageProbedAt: number | null;
 }

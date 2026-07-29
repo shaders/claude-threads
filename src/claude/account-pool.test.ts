@@ -387,3 +387,42 @@ describe('AccountPool', () => {
     });
   });
 });
+
+/**
+ * `usageProbedAt` answers "when did we last ASK", not "when did we last succeed".
+ * Stamping only successes froze it forever once an account began failing every
+ * cycle — a logged-out OAuth account does exactly that — so a status board could
+ * not tell "no data for hours, probing is broken" from "asked two minutes ago and
+ * the account refused". Those call for opposite actions.
+ */
+describe('AccountPool > usageProbedAt', () => {
+  const accounts = [
+    { id: 'a', home: '/tmp/a' },
+    { id: 'b', home: '/tmp/b' },
+  ];
+
+  it('advances on a failed probe, not only a successful one', async () => {
+    const pool = new AccountPool(accounts);
+    pool.setUsage('a', {
+      sessionPct: 10, weekAllModelsPct: 20, weekPerModelPct: null,
+      sessionResetsAt: null, weekResetsAt: null,
+    });
+    const afterSuccess = pool.status().find((s) => s.id === 'a')!.usageProbedAt!;
+    expect(afterSuccess).toBeGreaterThan(0);
+
+    // A measurable gap, and a STRICT comparison: `>=` would hold even if the
+    // failed probe left the old stamp untouched, which is the bug this pins.
+    await Bun.sleep(5);
+    pool.setUsage('a', null);
+    const row = pool.status().find((s) => s.id === 'a')!;
+
+    expect(row.usage).toBeNull();
+    expect(row.usagePercent).toBeNull();
+    expect(row.usageProbedAt).toBeGreaterThan(afterSuccess);
+  });
+
+  it('stays null for an account never probed at all', () => {
+    const pool = new AccountPool(accounts);
+    expect(pool.status().find((s) => s.id === 'b')!.usageProbedAt).toBeNull();
+  });
+});

@@ -820,6 +820,7 @@ export class SessionManager extends EventEmitter {
         activeSessions: a.activeSessions,
         sessionPct: a.usage?.sessionPct ?? null,
         weekPct: a.usage?.weekAllModelsPct ?? null,
+        weekPerModelPct: a.usage?.weekPerModelPct ?? null,
         sessionResetsAt: a.usage?.sessionResetsAt ?? null,
         weekResetsAt: a.usage?.weekResetsAt ?? null,
         usageProbedAt: a.usageProbedAt,

@@ -62,7 +62,7 @@ export interface AccountPoolStatus {
   usagePercent: number | null;
   /**
    * The two windows the limits actually use, straight from `/usage`, or null when
-   * never probed. Kept alongside `usagePercent` rather than replacing it: routing
+   * the last probe failed or never ran. Kept alongside `usagePercent` rather than replacing it: routing
    * wants one comparable number, a human reading a status board wants to know
    * WHICH window is nearly spent and when it resets — "61% weekly, resets
    * tomorrow" and "61% session, resets in 20 minutes" call for different actions.
@@ -99,7 +99,10 @@ export class AccountPool {
   private readonly coolingUntil: Map<string, number> = new Map();
   /** Latest usage per account from the most recent probe. null = not yet known. */
   private readonly usage: Map<string, AccountUsage | null> = new Map();
-  /** When each account was last probed. Separate map so setUsage stays the only writer. */
+  /**
+   * When each account was last PROBED, successfully or not. Separate map so
+   * setUsage stays the only writer.
+   */
   private readonly usageProbedAt: Map<string, number> = new Map();
   /** Rotating scan start, so accounts tied on score+active are cycled fairly. */
   private rrCursor = 0;
@@ -272,9 +275,12 @@ export class AccountPool {
   setUsage(accountId: string, usage: AccountUsage | null): void {
     if (!this.byId.has(accountId)) return;
     this.usage.set(accountId, usage);
-    // Stamped separately from the value so a reader can tell "0% used" from
-    // "measured an hour ago and possibly meaningless now".
-    if (usage) this.usageProbedAt.set(accountId, Date.now());
+    // Stamped on every ATTEMPT, including a failed one. Stamping only successes
+    // froze the timestamp forever once an account started failing every cycle (a
+    // logged-out OAuth account does exactly that), so a board could not tell
+    // "probing itself is broken, no data for hours" from "probed two minutes ago
+    // and the account is refusing" — opposite actions for whoever is on call.
+    this.usageProbedAt.set(accountId, Date.now());
     if (usage) {
       log.debug(`Account "${accountId}" usage: ${usageLoadScore(usage)}% (load score)`);
     }

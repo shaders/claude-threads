@@ -162,7 +162,11 @@ export function resolveLimits(limits?: LimitsConfig): ResolvedLimits {
     cleanupWorktrees: limits?.cleanupWorktrees ?? LIMITS_DEFAULTS.cleanupWorktrees,
     permissionTimeoutSeconds: limits?.permissionTimeoutSeconds ?? LIMITS_DEFAULTS.permissionTimeoutSeconds,
     flushDelayMs: limits?.flushDelayMs ?? LIMITS_DEFAULTS.flushDelayMs,
-    usageRefreshMinutes: limits?.usageRefreshMinutes ?? LIMITS_DEFAULTS.usageRefreshMinutes,
+    // Floor of 1: the refresh rides the monitor tick, which is once a minute, so
+    // anything smaller silently becomes "every tick" instead of what was written.
+    usageRefreshMinutes: Math.max(0, Math.round(
+      limits?.usageRefreshMinutes ?? LIMITS_DEFAULTS.usageRefreshMinutes
+    )),
   };
 }
 

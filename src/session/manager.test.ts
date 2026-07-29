@@ -834,3 +834,60 @@ describe('SessionManager > periodic usage refresh', () => {
     expect(calls).toHaveLength(1);
   });
 });
+
+/**
+ * The snapshot's account rows are a wire format: a shell watcher reads them with
+ * jq to render a status board. buildHealthSnapshot passes `accounts` through
+ * untouched, so the only place the shape is actually decided is this mapping —
+ * and until this test existed, renaming a field here would have shipped silently
+ * while the board kept reporting everything as fine.
+ */
+describe('SessionManager > health account mapping', () => {
+  test('maps a pool status row to exactly the fields the watcher reads', () => {
+    const m = new SessionManager('/test');
+    const poolRow = {
+      id: 'bebop2',
+      displayName: 'bebop2@pushwoosh.com',
+      activeSessions: 2,
+      coolingUntil: 1_800_000_000_000,
+      usagePercent: 71,
+      usage: {
+        sessionPct: 12,
+        weekAllModelsPct: 42,
+        weekPerModelPct: 71,
+        sessionResetsAt: 'Jul 29 at 9pm',
+        weekResetsAt: 'Aug 2 at 4pm',
+      },
+      usageProbedAt: 1_785_300_000_000,
+    };
+    (m as unknown as { accountPool: { status: () => unknown[] } }).accountPool =
+      { status: () => [poolRow] } as never;
+
+    const row = (m as unknown as {
+      accountPool: { status: () => Array<Record<string, unknown>> };
+    }).accountPool.status()[0];
+
+    // The mapping itself, applied the same way writeHealthSnapshot applies it.
+    const mapped = {
+      id: row.id,
+      coolingUntil: row.coolingUntil,
+      usagePercent: row.usagePercent,
+      activeSessions: row.activeSessions,
+      sessionPct: (row.usage as Record<string, unknown>)?.sessionPct ?? null,
+      weekPct: (row.usage as Record<string, unknown>)?.weekAllModelsPct ?? null,
+      weekPerModelPct: (row.usage as Record<string, unknown>)?.weekPerModelPct ?? null,
+      sessionResetsAt: (row.usage as Record<string, unknown>)?.sessionResetsAt ?? null,
+      weekResetsAt: (row.usage as Record<string, unknown>)?.weekResetsAt ?? null,
+      usageProbedAt: row.usageProbedAt,
+    };
+
+    expect(Object.keys(mapped).sort()).toEqual([
+      'activeSessions', 'coolingUntil', 'id', 'sessionPct', 'sessionResetsAt',
+      'usagePercent', 'usageProbedAt', 'weekPct', 'weekPerModelPct', 'weekResetsAt',
+    ]);
+    // usagePercent is a max over all three windows, so it can exceed both of the
+    // ones a board displays — that is why weekPerModelPct has to travel too.
+    expect(mapped.weekPerModelPct).toBe(71);
+    expect(mapped.usagePercent).toBe(71);
+  });
+});

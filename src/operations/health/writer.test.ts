@@ -14,13 +14,13 @@ import { buildHealthSnapshot, healthFilePath, writeHealthSnapshot } from './writ
 const ACCOUNTS = [
   {
     id: 'bebop', coolingUntil: null, usagePercent: 42, activeSessions: 3,
-    sessionPct: 12, weekPct: 42, sessionResetsAt: 'Jul 29 at 9pm',
+    sessionPct: 12, weekPct: 42, weekPerModelPct: 71, sessionResetsAt: 'Jul 29 at 9pm',
     weekResetsAt: 'Aug 2 at 4pm', usageProbedAt: 1_785_300_000_000,
   },
   {
     // Never probed: every window is null, and that is different from "0% used".
     id: 'bebop2', coolingUntil: 1_800_000_000_000, usagePercent: 100, activeSessions: 0,
-    sessionPct: null, weekPct: null, sessionResetsAt: null,
+    sessionPct: null, weekPct: null, weekPerModelPct: null, sessionResetsAt: null,
     weekResetsAt: null, usageProbedAt: null,
   },
 ];
