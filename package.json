@@ -69,7 +69,7 @@
     "hono": "4.12.27",
     "ink": "^6.6.0",
     "ink-scroll-view": "^0.3.5",
-    "js-yaml": "^4.1.1",
+    "js-yaml": "^4.3.0",
     "prompts": "^2.4.2",
     "react": "^19.2.3",
     "semver": "7.8.5",
@@ -111,9 +111,10 @@
     "flatted": ">=3.4.0",
     "picomatch": ">=2.3.2",
     "path-to-regexp": ">=8.4.0",
-    "fast-uri": ">=3.1.2",
+    "fast-uri": ">=3.1.4 <4",
     "ws": "$ws",
-    "shell-quote": ">=1.8.4"
+    "shell-quote": ">=1.9.0",
+    "brace-expansion": ">=5.0.7"
   },
   "resolutions": {
     "hono": "$hono",
@@ -122,8 +123,9 @@
     "flatted": ">=3.4.0",
     "picomatch": ">=2.3.2",
     "path-to-regexp": ">=8.4.0",
-    "fast-uri": ">=3.1.2",
+    "fast-uri": ">=3.1.4 <4",
     "ws": "$ws",
-    "shell-quote": ">=1.8.4"
+    "shell-quote": ">=1.9.0",
+    "brace-expansion": ">=5.0.7"
   }
 }
