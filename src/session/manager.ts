@@ -620,7 +620,7 @@ export class SessionManager extends EventEmitter {
 
   private startTyping(session: Session): void {
     const wasTyping = session.timers.typingTimer !== null;
-    streaming.startTyping(session);
+    streaming.startTyping(session, () => this.registry.get(session.sessionId) === session);
     // Emit UI update if typing state changed
     if (!wasTyping && session.timers.typingTimer !== null) {
       this.emitSessionUpdate(session.sessionId, { isTyping: true });

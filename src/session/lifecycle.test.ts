@@ -1389,3 +1389,89 @@ describe('resolveQuietMode', () => {
     expect(lifecycle.resolveQuietMode(false, true)).toBe(false);
   });
 });
+
+/**
+ * One thread, one session. A WebSocket reconnect replays every missed post at
+ * once without awaiting the handlers, so two posts of the same thread reach
+ * startSession concurrently — and both used to build a session, the second
+ * overwriting the first in the sessions map. The displaced Session was
+ * unreachable by every cleanup path while its typing interval kept pulsing,
+ * which is what left "X is typing…" stuck in a finished thread.
+ */
+describe('concurrent session creation for one thread', () => {
+  it('never has two starts for one thread in flight at the same time', async () => {
+    // A second commit is invisible in the map (same key), so observe the
+    // overlap instead: session setup posts before it commits, and the two
+    // setups must not run at once.
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const platform = createMockPlatform({
+      createPost: mock(async () => {
+        inFlight++;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        inFlight--;
+        return { id: 'post-1', message: '', userId: 'bot' };
+      }) as any,
+    });
+    const sessions = new Map<string, Session>();
+    const ctx = createMockSessionContext(sessions);
+    (ctx.state.platforms as Map<string, PlatformClient>).set('test-platform', platform);
+
+    await Promise.all([
+      lifecycle.startSession({ prompt: 'first' }, 'alice', 'Alice', 'thread-race', 'test-platform', ctx),
+      lifecycle.startSession({ prompt: 'second' }, 'alice', 'Alice', 'thread-race', 'test-platform', ctx),
+    ]);
+
+    expect(maxInFlight).toBe(1);
+    expect(sessions.size).toBeLessThanOrEqual(1);
+  });
+
+  /**
+   * The lock map is keyed by sessionId, so an entry left behind after the
+   * start settles is one leaked promise per thread the bot ever saw — it grows
+   * for the whole process lifetime.
+   */
+  it('drops its lock entry once the start has settled', async () => {
+    const sessions = new Map<string, Session>();
+    const ctx = createMockSessionContext(sessions);
+    (ctx.state.platforms as Map<string, PlatformClient>).set('test-platform', createMockPlatform());
+
+    const before = lifecycle.sessionCreationLockCount();
+    await lifecycle.startSession(
+      { prompt: 'first' }, 'alice', 'Alice', 'thread-lock-cleanup', 'test-platform', ctx,
+    );
+    // The self-cleanup runs in a .finally on the chained promise, one turn later.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(lifecycle.sessionCreationLockCount()).toBe(before);
+  });
+
+  it('skips a resume for a thread that already holds a live session', async () => {
+    const platform = createMockPlatform({
+      getPost: mock(() => Promise.resolve({ id: 'thread-live', message: '', userId: 'u' })) as any,
+    });
+    const sessions = new Map<string, Session>();
+    const ctx = createMockSessionContext(sessions);
+    (ctx.state.platforms as Map<string, PlatformClient>).set('test-platform', platform);
+    sessions.set('test-platform:thread-live', createMockSession({
+      sessionId: 'test-platform:thread-live',
+      threadId: 'thread-live',
+    }));
+
+    await lifecycle.resumeSession({
+      platformId: 'test-platform',
+      threadId: 'thread-live',
+      claudeSessionId: 'uuid-live',
+      // A real directory: a missing one makes resume bail before the guard,
+      // which would pass this test for the wrong reason.
+      workingDir: process.cwd(),
+      startedBy: 'alice',
+      startedAt: new Date().toISOString(),
+    } as any, ctx);
+
+    expect(sessions.size).toBe(1);
+    expect(ctx.ops.emitSessionAdd).not.toHaveBeenCalled();
+    expect(ctx.ops.acquireClaudeAccount).not.toHaveBeenCalled();
+  });
+});

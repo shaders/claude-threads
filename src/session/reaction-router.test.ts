@@ -66,7 +66,11 @@ function makeDeps(
     sessionStore: sessionStore as SessionStore,
     platforms: new Map(),
     limits: { maxSessions: 5 } as ResolvedLimits,
-    getContext: () => ({} as SessionContext),
+    // resumeSession keys its per-thread lock off ops.getSessionId, so the stub
+    // carries it — SessionManager.getContext() never hands out a context without.
+    getContext: () => ({
+      ops: { getSessionId: (p: string, t: string) => `${p}:${t}` },
+    } as unknown as SessionContext),
     getContextPromptHandler: () => ({} as ContextPromptHandler),
     persistSession: mock(() => {}),
     createAndSwitchToWorktree: mock(() => Promise.resolve()),
