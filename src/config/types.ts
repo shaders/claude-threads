@@ -98,6 +98,16 @@ export interface LimitsConfig {
    * more API calls. Higher = fewer posts + coarser visible streaming.
    */
   flushDelayMs?: number;
+  /**
+   * How often to re-probe every Claude account's `/usage`, in minutes. 0 disables.
+   *
+   * Routing never needed this — usage is probed on demand when a session starts,
+   * which keeps the data fresh exactly when it is used and costs nothing while
+   * idle. A status board does need it: an idle bot's numbers would otherwise be
+   * hours old, and "61% weekly" from an hour ago is not something to act on.
+   * The probe runs zero turns and costs $0; the cost is one CLI spawn per account.
+   */
+  usageRefreshMinutes?: number;
 }
 
 /**
@@ -113,6 +123,7 @@ export interface ResolvedLimits {
   cleanupWorktrees: boolean;
   permissionTimeoutSeconds: number;
   flushDelayMs: number;
+  usageRefreshMinutes: number;
 }
 
 /**
@@ -127,6 +138,9 @@ export const LIMITS_DEFAULTS: ResolvedLimits = {
   cleanupWorktrees: true,
   permissionTimeoutSeconds: 120,
   flushDelayMs: 500,
+  // Off by default: a single-account bot has nothing to balance or display, and
+  // the fleet turns it on explicitly.
+  usageRefreshMinutes: 0,
 };
 
 /**
@@ -148,6 +162,7 @@ export function resolveLimits(limits?: LimitsConfig): ResolvedLimits {
     cleanupWorktrees: limits?.cleanupWorktrees ?? LIMITS_DEFAULTS.cleanupWorktrees,
     permissionTimeoutSeconds: limits?.permissionTimeoutSeconds ?? LIMITS_DEFAULTS.permissionTimeoutSeconds,
     flushDelayMs: limits?.flushDelayMs ?? LIMITS_DEFAULTS.flushDelayMs,
+    usageRefreshMinutes: limits?.usageRefreshMinutes ?? LIMITS_DEFAULTS.usageRefreshMinutes,
   };
 }
 

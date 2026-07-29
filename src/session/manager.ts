@@ -150,6 +150,8 @@ export class SessionManager extends EventEmitter {
   // session starts) and the epoch ms it last completed (for the TTL skip).
   private usageRefreshInFlight: Promise<void> | null = null;
   private usageRefreshedAt = 0;
+  /** Last PERIODIC refresh, separate from the on-demand cache stamp above. */
+  private usagePeriodicAt = 0;
 
   constructor(
     workingDir: string,
@@ -772,7 +774,29 @@ export class SessionManager extends EventEmitter {
    * Write the heartbeat an outside watcher polls. Only the bot knows these
    * numbers; host facts are the watcher's own business (see health/writer.ts).
    */
+  /**
+   * Re-probe account usage on a slow schedule so the status board shows numbers
+   * worth acting on. Routing itself never needed this: it probes when a session
+   * starts, which is exactly when the answer is used. An idle bot, though, would
+   * publish hour-old percentages, and "61% weekly" measured an hour ago is not a
+   * fact you can act on.
+   *
+   * Deliberately not awaited by the caller's critical path — refreshAccountUsage
+   * already bounds its own wait and coalesces concurrent cycles, and a slow probe
+   * must not delay the heartbeat.
+   */
+  private maybeRefreshUsage(): void {
+    const minutes = this.limits.usageRefreshMinutes;
+    if (minutes <= 0) return;
+    if (this.accountPool.all.length < 2) return;
+    const now = Date.now();
+    if (now - this.usagePeriodicAt < minutes * 60_000) return;
+    this.usagePeriodicAt = now;
+    void this.refreshAccountUsage().catch(() => { /* probe failures mark usage unknown */ });
+  }
+
   private async writeHealthSnapshot(): Promise<void> {
+    this.maybeRefreshUsage();
     let processing = 0;
     let stalest: number | null = null;
     const now = Date.now();
@@ -794,6 +818,11 @@ export class SessionManager extends EventEmitter {
         coolingUntil: a.coolingUntil,
         usagePercent: a.usagePercent,
         activeSessions: a.activeSessions,
+        sessionPct: a.usage?.sessionPct ?? null,
+        weekPct: a.usage?.weekAllModelsPct ?? null,
+        sessionResetsAt: a.usage?.sessionResetsAt ?? null,
+        weekResetsAt: a.usage?.weekResetsAt ?? null,
+        usageProbedAt: a.usageProbedAt,
       })),
     }));
   }

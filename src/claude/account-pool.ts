@@ -60,6 +60,24 @@ export interface AccountPoolStatus {
   coolingUntil: number | null; // epoch ms, null = available
   /** Usage load score 0–100 from the latest `/usage` probe, or null if unknown. */
   usagePercent: number | null;
+  /**
+   * The two windows the limits actually use, straight from `/usage`, or null when
+   * never probed. Kept alongside `usagePercent` rather than replacing it: routing
+   * wants one comparable number, a human reading a status board wants to know
+   * WHICH window is nearly spent and when it resets — "61% weekly, resets
+   * tomorrow" and "61% session, resets in 20 minutes" call for different actions.
+   *
+   * There is no daily window. Anthropic's are a rolling session block and a week.
+   */
+  usage: {
+    sessionPct: number;
+    weekAllModelsPct: number;
+    weekPerModelPct: number | null;
+    sessionResetsAt: string | null;
+    weekResetsAt: string | null;
+  } | null;
+  /** When this account's usage was last probed (epoch ms), null if never. */
+  usageProbedAt: number | null;
 }
 
 /** Options that steer account selection. */
@@ -81,6 +99,8 @@ export class AccountPool {
   private readonly coolingUntil: Map<string, number> = new Map();
   /** Latest usage per account from the most recent probe. null = not yet known. */
   private readonly usage: Map<string, AccountUsage | null> = new Map();
+  /** When each account was last probed. Separate map so setUsage stays the only writer. */
+  private readonly usageProbedAt: Map<string, number> = new Map();
   /** Rotating scan start, so accounts tied on score+active are cycled fairly. */
   private rrCursor = 0;
 
@@ -252,6 +272,9 @@ export class AccountPool {
   setUsage(accountId: string, usage: AccountUsage | null): void {
     if (!this.byId.has(accountId)) return;
     this.usage.set(accountId, usage);
+    // Stamped separately from the value so a reader can tell "0% used" from
+    // "measured an hour ago and possibly meaningless now".
+    if (usage) this.usageProbedAt.set(accountId, Date.now());
     if (usage) {
       log.debug(`Account "${accountId}" usage: ${usageLoadScore(usage)}% (load score)`);
     }
@@ -292,6 +315,16 @@ export class AccountPool {
         activeSessions: this.activeCounts.get(acc.id) ?? 0,
         coolingUntil: cooling > now ? cooling : null,
         usagePercent: usage ? usageLoadScore(usage) : null,
+        usage: usage
+          ? {
+            sessionPct: usage.sessionPct,
+            weekAllModelsPct: usage.weekAllModelsPct,
+            weekPerModelPct: usage.weekPerModelPct,
+            sessionResetsAt: usage.sessionResetsAt,
+            weekResetsAt: usage.weekResetsAt,
+          }
+          : null,
+        usageProbedAt: this.usageProbedAt.get(acc.id) ?? null,
       };
     });
   }

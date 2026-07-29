@@ -792,3 +792,45 @@ describe('SessionManager', () => {
     });
   });
 });
+
+/**
+ * Usage is probed on demand when a session starts, which is right for routing but
+ * useless for a status board: an idle bot would publish hour-old percentages. The
+ * periodic refresh exists only for the board, so it must stay off unless asked for
+ * and must never run where there is nothing to compare.
+ */
+describe('SessionManager > periodic usage refresh', () => {
+  function harness(usageRefreshMinutes: number, accountCount: number) {
+    const calls: number[] = [];
+    const mgr = {
+      limits: { usageRefreshMinutes },
+      accountPool: { all: Array.from({ length: accountCount }, (_, i) => ({ id: `a${i}` })) },
+      usagePeriodicAt: 0,
+      refreshAccountUsage: async () => { calls.push(Date.now()); },
+    } as unknown as { maybeRefreshUsage: () => void };
+    // Borrow the real method rather than reimplementing its rules in the test.
+    (mgr as unknown as Record<string, unknown>).maybeRefreshUsage =
+      (SessionManager.prototype as unknown as Record<string, () => void>).maybeRefreshUsage;
+    return { mgr, calls };
+  }
+
+  test('does nothing when the interval is zero', () => {
+    const { mgr, calls } = harness(0, 4);
+    mgr.maybeRefreshUsage();
+    expect(calls).toHaveLength(0);
+  });
+
+  test('does nothing with fewer than two accounts', () => {
+    const { mgr, calls } = harness(10, 1);
+    mgr.maybeRefreshUsage();
+    expect(calls).toHaveLength(0);
+  });
+
+  test('probes once and then holds off until the interval passes', () => {
+    const { mgr, calls } = harness(10, 4);
+    mgr.maybeRefreshUsage();
+    mgr.maybeRefreshUsage();
+    mgr.maybeRefreshUsage();
+    expect(calls).toHaveLength(1);
+  });
+});

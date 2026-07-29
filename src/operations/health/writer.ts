@@ -26,6 +26,21 @@ export interface HealthAccount {
   /** Load score 0–100 from the last `/usage` probe, null when never probed. */
   usagePercent: number | null;
   activeSessions: number;
+  /**
+   * The two windows the limits actually use. There is no daily one: Anthropic's
+   * are a rolling session block and a week, so a board that says "daily" would be
+   * lying. Null when never probed.
+   */
+  sessionPct: number | null;
+  weekPct: number | null;
+  sessionResetsAt: string | null;
+  weekResetsAt: string | null;
+  /**
+   * When these numbers were measured (epoch ms). Load-bearing for a status board:
+   * "0% used" and "measured an hour ago" demand different reactions, and usage is
+   * only probed on a schedule, never continuously.
+   */
+  usageProbedAt: number | null;
 }
 
 export interface HealthSnapshot {
