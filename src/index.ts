@@ -22,6 +22,7 @@ import { checkForUpdates } from './update-notifier.js';
 import { VERSION } from './version.js';
 import { keepAlive } from './utils/keep-alive.js';
 import { startReactMeasureCleanup } from './utils/perf-cleanup.js';
+import { startLoopStallWatchdog } from './utils/loop-stall.js';
 import { dim, red } from './utils/colors.js';
 import { validateClaudeCli } from './claude/version-check.js';
 import { validateCodexCli } from './agents/codex/version-check.js';
@@ -422,6 +423,10 @@ async function startWithoutDaemon() {
   // leaks until OOM. Nothing reads these entries, so drop them on a timer.
   // See src/utils/perf-cleanup.ts for the full rationale and safety notes.
   startReactMeasureCleanup();
+
+  // A frozen supervisor looks like a gap in the log and nothing else. Name it.
+  // See src/utils/loop-stall.ts for what freezes it and what breaks downstream.
+  startLoopStallWatchdog();
 
   // Check if this is a daemon restart after update - restore runtime settings if so
   const updateState = loadUpdateState();
