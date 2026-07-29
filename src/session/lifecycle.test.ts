@@ -1427,6 +1427,26 @@ describe('concurrent session creation for one thread', () => {
     expect(sessions.size).toBeLessThanOrEqual(1);
   });
 
+  /**
+   * The lock map is keyed by sessionId, so an entry left behind after the
+   * start settles is one leaked promise per thread the bot ever saw — it grows
+   * for the whole process lifetime.
+   */
+  it('drops its lock entry once the start has settled', async () => {
+    const sessions = new Map<string, Session>();
+    const ctx = createMockSessionContext(sessions);
+    (ctx.state.platforms as Map<string, PlatformClient>).set('test-platform', createMockPlatform());
+
+    const before = lifecycle.sessionCreationLockCount();
+    await lifecycle.startSession(
+      { prompt: 'first' }, 'alice', 'Alice', 'thread-lock-cleanup', 'test-platform', ctx,
+    );
+    // The self-cleanup runs in a .finally on the chained promise, one turn later.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(lifecycle.sessionCreationLockCount()).toBe(before);
+  });
+
   it('skips a resume for a thread that already holds a live session', async () => {
     const platform = createMockPlatform({
       getPost: mock(() => Promise.resolve({ id: 'thread-live', message: '', userId: 'u' })) as any,

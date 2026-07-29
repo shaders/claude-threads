@@ -120,12 +120,20 @@ function withSessionCreationLock(
   const previous = sessionCreationLocks.get(sessionId) ?? Promise.resolve();
   // Registered synchronously so concurrent callers chain instead of interleaving.
   const chained = previous.then(run, run);
-  sessionCreationLocks.set(sessionId, chained.then(() => {}, () => {}));
+  // The map holds the swallowed variant, so the self-cleanup below has to
+  // compare against that same promise — comparing with `chained` never matches.
+  const registered = chained.then(() => {}, () => {});
+  sessionCreationLocks.set(sessionId, registered);
   return chained.finally(() => {
-    if (sessionCreationLocks.get(sessionId) === chained) {
+    if (sessionCreationLocks.get(sessionId) === registered) {
       sessionCreationLocks.delete(sessionId);
     }
   });
+}
+
+/** Lock-map size, for the leak regression test — nothing in the bot reads it. */
+export function sessionCreationLockCount(): number {
+  return sessionCreationLocks.size;
 }
 
 /**
