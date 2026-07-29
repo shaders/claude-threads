@@ -255,16 +255,29 @@ export function formatSkippedFilesFeedback(skippedFiles: SkippedFile[]): string 
 // Typing indicators
 // ---------------------------------------------------------------------------
 
+/** Gap between typing pulses. Must stay below the platform's own expiry. */
+export const TYPING_INTERVAL_MS = 3000;
+
 /**
  * Start sending typing indicators to the platform.
  * Sends immediately, then every 3 seconds until stopped.
+ *
+ * `isCurrent` tells a tick whether its session is still the registered one for
+ * its thread. A session object that lost that spot is unreachable — no cleanup
+ * path can find it to call stopTyping — while Mattermost keeps showing
+ * "typing…" for as long as the pulses arrive (it expires them 5s after the
+ * last one). So the tick checks and stops itself.
  */
-export function startTyping(session: Session): void {
+export function startTyping(session: Session, isCurrent?: () => boolean): void {
   if (session.timers.typingTimer) return;
   session.platform.sendTyping(session.threadId);
   session.timers.typingTimer = setInterval(() => {
+    if (isCurrent && !isCurrent()) {
+      stopTyping(session);
+      return;
+    }
     session.platform.sendTyping(session.threadId);
-  }, 3000);
+  }, TYPING_INTERVAL_MS);
 }
 
 /**

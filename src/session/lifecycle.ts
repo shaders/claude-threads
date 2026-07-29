@@ -92,6 +92,64 @@ function releasePendingStart(): void {
 }
 
 /**
+ * Per-thread lock over session creation, keyed by sessionId. The cap counter
+ * above guards how MANY sessions get admitted; this guards that two of them
+ * are never built for the SAME thread.
+ *
+ * Both entry points (startSession, resumeSession) run many awaits — posts,
+ * thread history, account probes — between "no session here" and the commit to
+ * the sessions map, and a WebSocket reconnect replays every missed post at once
+ * without awaiting the handlers (mattermost/client.ts recoverMissedMessages).
+ * Two posts of one thread therefore arrive concurrently, both build a session,
+ * and the second commit used to overwrite the first. The displaced Session was
+ * unreachable — absent from the registry, so no cleanup path, idle sweep or
+ * kill could ever find it — yet its typing interval and CLI process kept
+ * running: a "typing…" that never stopped (observed 2026-07-29 after a 1006
+ * reconnect replayed 34 posts).
+ *
+ * Chaining, not rejecting: the latecomer waits and then re-enters, where the
+ * existing-session check turns it into a follow-up on the winning session,
+ * so the message is still delivered.
+ */
+const sessionCreationLocks = new Map<string, Promise<void>>();
+
+function withSessionCreationLock(
+  sessionId: string,
+  run: () => Promise<void>
+): Promise<void> {
+  const previous = sessionCreationLocks.get(sessionId) ?? Promise.resolve();
+  // Registered synchronously so concurrent callers chain instead of interleaving.
+  const chained = previous.then(run, run);
+  sessionCreationLocks.set(sessionId, chained.then(() => {}, () => {}));
+  return chained.finally(() => {
+    if (sessionCreationLocks.get(sessionId) === chained) {
+      sessionCreationLocks.delete(sessionId);
+    }
+  });
+}
+
+/**
+ * Put a freshly built session in the map, refusing to displace another one.
+ * With the lock above this should be unreachable; it stays because the cost of
+ * being wrong is an immortal orphan (see sessionCreationLocks), not a retry.
+ */
+function commitSession(ctx: SessionContext, session: Session): boolean {
+  const occupant = mutableSessions(ctx).get(session.sessionId);
+  if (occupant && occupant !== session) {
+    sessionLog(session).warn(
+      `A session is already registered for this thread — abandoning the duplicate`
+    );
+    clearAllTimers(session.timers);
+    session.messageManager?.dispose();
+    void session.claude.kill();
+    releaseAccountIfHeld(session, ctx);
+    return false;
+  }
+  mutableSessions(ctx).set(session.sessionId, session);
+  return true;
+}
+
+/**
  * Get postIndex map with correct mutable type.
  * Reduces type casting noise throughout the module.
  */
@@ -858,6 +916,25 @@ export async function startSession(
   triggeringPostId?: string,
   initialOptions?: InitialSessionOptions
 ): Promise<void> {
+  const run = () => startSessionUnlocked(
+    options, username, displayName, replyToPostId, platformId, ctx, triggeringPostId, initialOptions
+  );
+  // Without a thread root the session anchors on a post this call is about to
+  // create, so no other caller can collide on it — nothing to serialize.
+  if (!replyToPostId) return run();
+  return withSessionCreationLock(ctx.ops.getSessionId(platformId, replyToPostId), run);
+}
+
+async function startSessionUnlocked(
+  options: { prompt: string; files?: PlatformFile[]; skipWorktreePrompt?: boolean },
+  username: string,
+  displayName: string | undefined,
+  replyToPostId: string | undefined,
+  platformId: string,
+  ctx: SessionContext,
+  triggeringPostId?: string,
+  initialOptions?: InitialSessionOptions
+): Promise<void> {
   const threadId = replyToPostId || '';
 
   // Check if session already exists for this thread
@@ -1153,7 +1230,10 @@ export async function startSession(
 
   // Register session — the reservation can now be released since the real
   // entry is now in the map and counted by .size.
-  mutableSessions(ctx).set(sessionId, session);
+  if (!commitSession(ctx, session)) {
+    releasePendingStart();
+    return;
+  }
   releasePendingStart();
   if (startPost) {
     ctx.ops.registerPost(startPost.id, actualThreadId);
@@ -1267,6 +1347,17 @@ export async function resumeSession(
   state: PersistedSession,
   ctx: SessionContext
 ): Promise<void> {
+  if (!state.threadId || !state.platformId) return resumeSessionUnlocked(state, ctx);
+  return withSessionCreationLock(
+    `${state.platformId}:${state.threadId}`,
+    () => resumeSessionUnlocked(state, ctx)
+  );
+}
+
+async function resumeSessionUnlocked(
+  state: PersistedSession,
+  ctx: SessionContext
+): Promise<void> {
   // Validate required fields - skip gracefully if critical data is missing
   if (!state.threadId || !state.platformId || !state.claudeSessionId || !state.workingDir) {
     const missing = [
@@ -1280,6 +1371,15 @@ export async function resumeSession(
   }
 
   const shortId = state.threadId.substring(0, 8);
+
+  // Another resume (or a fresh start) already put a live session on this
+  // thread. Callers check this before calling, but they check outside the
+  // lock — a replayed burst of posts has them all pass. Building a second
+  // Session here would orphan one of them (see sessionCreationLocks).
+  if (mutableSessions(ctx).has(`${state.platformId}:${state.threadId}`)) {
+    log.debug(`Session ${shortId}... is already active, skipping resume`);
+    return;
+  }
 
   // Get platform for this session
   const platforms = ctx.state.platforms as Map<string, PlatformClient>;
@@ -1509,7 +1609,7 @@ export async function resumeSession(
   });
 
   // Register session
-  mutableSessions(ctx).set(sessionId, session);
+  if (!commitSession(ctx, session)) return;
 
   // Register worktree user for reference counting (if session has a worktree)
   if (session.worktreeInfo) {
