@@ -88,7 +88,6 @@ jobs:
       - run: bun install
 
       - name: Run tests with coverage
-        id: coverage
         run: |
           # Run tests and capture coverage output
           # Use pipefail to ensure test failures are not masked by tee
@@ -104,7 +103,6 @@ jobs:
           fi
 
           echo "Line coverage: ${COVERAGE}%"
-          echo "coverage=$COVERAGE" >> $GITHUB_OUTPUT
 
           # Enforce minimum coverage threshold (80%)
           if [ "$COVERAGE" -lt 80 ]; then
@@ -112,19 +110,6 @@ jobs:
             exit 1
           fi
           echo "✅ Coverage ${COVERAGE}% meets threshold of 80%"
-
-      - name: Upload coverage badge
-        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-        uses: schneegans/dynamic-badges-action@v1.8.0
-        with:
-          auth: ${{ secrets.GIST_TOKEN }}
-          gistID: ${{ vars.COVERAGE_GIST_ID }}
-          filename: coverage-badge.json
-          label: coverage
-          message: ${{ steps.coverage.outputs.coverage }}%
-          valColorRange: ${{ steps.coverage.outputs.coverage }}
-          maxColorRange: 100
-          minColorRange: 0
 
   build:
     runs-on: ubuntu-latest
