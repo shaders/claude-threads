@@ -35,6 +35,7 @@ const {
 } = await import('./waiting.js');
 const { getArbiterState } = await import('./handler.js');
 
+import { waitFor } from '../../test-utils/wait-for.js';
 import type { Session } from '../../session/types.js';
 import type { SessionContext } from '../session-context/index.js';
 
@@ -406,9 +407,16 @@ describe('resolution: escalation', () => {
     const ctx = makeCtx(spies, session);
 
     noteWaiting(session, ctx, undefined);
-    await Bun.sleep(WAIT_MS * 4 + 60); // long enough for several pings
-
-    const pings = spies.posts.filter((p) => p.includes('агент ждёт ответа')).length;
+    // Polled, not slept: a fixed sleep sized for a laptop is the first thing a
+    // loaded CI runner misses, and this test then reports "judged twice" for a
+    // second ping that simply had not happened yet.
+    const pings = await waitFor(
+      () => {
+        const count = spies.posts.filter((p) => p.includes('агент ждёт ответа')).length;
+        return count > 1 ? count : 0;
+      },
+      { timeoutMs: 5000, intervalMs: 10, message: 'expected more than one escalation ping' }
+    );
     expect(pings).toBeGreaterThan(1);
     expect(quickQueryMock).toHaveBeenCalledTimes(1);
     cancelWaiting(session);

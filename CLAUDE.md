@@ -410,6 +410,12 @@ the floor strands users on otherwise-supported LTS lines. Forced to 20 by
 **CI strategy**:
 - Bun is pinned (`BUN_VERSION` env in every workflow) so a Bun release can't
   silently break us. Bump in lockstep when upgrading.
+  **Floor for the test suite: 1.3.12.** Below it `jest.advanceTimersByTime` does
+  not exist, so every test using fake timers fails — six of them, in
+  `utils/loop-stall.test.ts` and `operations/streaming/handler.test.ts`. That is
+  a hard failure, not a flake, and it made the `test` job red on `main` while
+  everyone's local run stayed green on a newer Bun. If the pin ever has to go
+  back below 1.3.12, those tests have to be rewritten first.
 - `publish.yml` builds under Node 20 (the floor) so any unsafe API call that
   only exists on newer Node breaks the build before reaching users.
 - `ci.yml` has a `node-smoke` matrix (`[20, 22, 24]`) that runs the built
