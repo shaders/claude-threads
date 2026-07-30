@@ -25,7 +25,9 @@ import * as arbiter from '../arbiter/index.js';
 import * as returnAddress from '../return-address/index.js';
 import * as docsPing from '../docs-ping/index.js';
 import * as reviewPing from '../review-ping/index.js';
+import * as chain from '../arbiter/chain/handler.js';
 import * as teammates from '../../teammates/observer.js';
+import { deriveToolEvents } from './tool-events.js';
 import { parseClaudeCommand, removeCommandFromText, isClaudeAllowedCommand } from '../../commands/index.js';
 
 const log = createLogger('events');
@@ -221,10 +223,38 @@ export function handleEventPreProcessing(
     }
   }
 
-  // Track tool use events for bug reporting context
-  if (event.type === 'tool_use') {
-    const tool = event.tool_use as { name: string };
-    trackEvent(session, 'tool_use', tool.name);
+  // Track tool use events for bug reporting context. Includes the calls Claude
+  // reports as blocks inside its `assistant` message — without them a bug report
+  // from a Claude session listed no tools at all.
+  for (const toolEvent of [event, ...deriveToolEvents(event)]) {
+    if (toolEvent.type === 'tool_use') {
+      const tool = toolEvent.tool_use as { name: string };
+      trackEvent(session, 'tool_use', tool.name);
+    }
+  }
+}
+
+/**
+ * Fan an event out to everything that watches tool traffic.
+ *
+ * One function so the derived-event path (tool-events.ts) cannot drift from the
+ * as-arrived path: an observer added to only one of the two would be live on
+ * exactly one backend, which is the bug this whole normalization exists for.
+ */
+function notifyToolObservers(session: Session, event: ClaudeEvent, ctx: SessionContext): void {
+  arbiter.noteEvent(session, event);
+  returnAddress.noteEvent(session, event);
+  docsPing.noteEvent(session, event, ctx);
+  // Handoffs happen inside the MCP child, whose logs never reach the journal —
+  // the bot logs them here so `journalctl -u claude-threads` shows them.
+  teammates.noteEvent(session, event);
+
+  // Tool errors, for bug-report context.
+  if (event.type === 'tool_result') {
+    const result = event.tool_result as { is_error?: boolean } | undefined;
+    if (result?.is_error) {
+      trackEvent(session, 'tool_error', 'Tool execution failed');
+    }
   }
 }
 
@@ -252,14 +282,15 @@ export function handleEventPostProcessing(
     }
   }
 
-  // Arbiter bookkeeping: delivery tool calls/results + the turn's final assistant text
+  // Arbiter bookkeeping: delivery tool calls/results + the turn's final assistant
+  // text. Fed twice over: with the event as it arrived, and with the standalone
+  // tool events implied by its content blocks — the only way these observers see
+  // tool traffic on a Claude session (see tool-events.ts).
   if (event.type === 'tool_use' || event.type === 'tool_result' || event.type === 'assistant') {
-    arbiter.noteEvent(session, event);
-    returnAddress.noteEvent(session, event);
-    docsPing.noteEvent(session, event, ctx);
-    // Handoffs happen inside the MCP child, whose logs never reach the journal —
-    // the bot logs them here so `journalctl -u claude-threads` shows them.
-    teammates.noteEvent(session, event);
+    notifyToolObservers(session, event, ctx);
+  }
+  for (const derived of deriveToolEvents(event)) {
+    notifyToolObservers(session, derived, ctx);
   }
 
   // Handle result events - stop typing, update UI, extract usage
@@ -278,14 +309,10 @@ export function handleEventPostProcessing(
     // the dust settles (judged out-of-band, delivered by us).
     docsPing.onTurnComplete(session, ctx);
     reviewPing.onTurnComplete(session, ctx);
-  }
-
-  // Track tool errors for bug reporting context
-  if (event.type === 'tool_result') {
-    const result = event.tool_result as { is_error?: boolean };
-    if (result.is_error) {
-      trackEvent(session, 'tool_error', 'Tool execution failed');
-    }
+    // Review chain: bump the turn clock and let agent-owned steps speak once the
+    // session settles (an MR that nobody sent for review, a review nobody handed
+    // back, a finished task the requester was never told about).
+    chain.onTurnComplete(session, ctx);
   }
 
   // Handle system errors

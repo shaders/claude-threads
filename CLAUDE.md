@@ -104,6 +104,45 @@ Sessions can run either Claude Code CLI (default) or OpenAI Codex CLI. The abstr
 - **Degradation**: plugins, Chrome, statusline, and quickQuery title/tag suggestions are Claude-only. Codex reports no cost (💰 chip hidden), usage comes from `thread/tokenUsage/updated` (synthesized into `result.modelUsage` - required, or usage stats silently never appear).
 - **Testing**: mock app-server at `tests/integration/fixtures/mock-codex/` (scenarios `codex-simple`, `codex-approval`, `codex-persistent`), suite `tests/integration/suites/session-codex.test.ts`.
 
+## The Review Chain (cross-bot arbiter)
+
+The delivery ledger answers "did my agent deliver what the user asked for". The
+chain answers the fleet's actual failure: an MR that nobody was asked to review, a
+review nobody answered, a clean review with no approval, a result never handed
+back, a human never told the task is done. Those steps span two processes on two
+hosts, and each has exactly one party that can perform it.
+
+Two invariants hold the design together:
+
+1. **The owner is who can act.** Our own agent → inject `[Arbiter] …`; another bot
+   → mention it in THIS thread (the only thing that wakes its session, never a new
+   thread); a human → `@mention`. An owner we cannot reach is an escalation, not a
+   reminder.
+2. **Closure is an event, not a deadline.** Our turn ends with `result`; the
+   reviewer's arrival, its hand-back and its rate-limit notice are posts we can
+   see; the approval is a fact in GitLab read with `glab`. Timers exist only as a
+   missing-owner detector, measured as a **sliding silence window** from the
+   owner's last sign of life.
+
+Design notes that are easy to get wrong:
+
+- Agent-owned steps fire on **turn ends**, capped at one nudge per turn
+  (`lastNudgeTurn`) — otherwise any timer tick walks the whole ladder to the
+  escalation while the agent is composing its reply.
+- `post_edited` is a first-class liveness signal (`PlatformClientEvents`): a bot
+  mid-task rewrites one rolling tool line rather than posting, so without edits a
+  busy teammate looks exactly like a dead one. It is emitted separately from
+  `message` and must NEVER be routed to an agent as input.
+- A rate-limit notice from a party is the one post that is *not* a sign of life —
+  it must not satisfy "the reviewer replied", or the step settles as done on the
+  evidence that nobody is coming.
+- Only the ledger is persisted. `lastSeen`, the turn clock and the timers are
+  rebuilt after a restart, because a fresh process has not been watching the thread
+  and must give the owner the full window again rather than escalate on arrival.
+- Thread traffic is observed in `message-handler.ts` **before** every routing gate
+  (`SessionManager.noteThreadActivity`), since those gates exist to drop traffic
+  not addressed to us — which is exactly a teammate's own output.
+
 ## Multi-Platform Support
 
 **Architecture**: claude-threads supports connecting to multiple chat platforms simultaneously through a platform abstraction layer.
@@ -286,6 +325,9 @@ Each executor owns a specific piece of interactive state:
 
 | File | Purpose |
 |------|---------|
+| `src/operations/arbiter/chain/reducer.ts` | Review chain: pure `tick(expectations, facts, policy) → actions` |
+| `src/operations/arbiter/chain/handler.ts` | Review chain: fact gathering, timers, action execution |
+| `src/operations/arbiter/chain/verify.ts` | Review chain: `glab` approval check + haiku review-verdict classifier |
 | `src/operations/executors/content.ts` | Content streaming state |
 | `src/operations/executors/task-list.ts` | Task list display |
 | `src/operations/executors/question-approval.ts` | Questions and plan approval |
@@ -712,11 +754,20 @@ Claude CLI emits JSON events. The transformer converts them to MessageOperations
 **Which of those a backend actually sends matters.** Claude CLI reports tool
 *calls* as `tool_use` blocks inside `assistant` messages and tool *outcomes* as
 `tool_result` blocks inside `user` messages — it does not send the standalone
-`tool_use` / `tool_result` events. Codex synthesizes those instead. So the
-`tool_result` case is Codex-only, the `user` case is Claude-only, and anything
-new that keys off `event.type === 'tool_use' | 'tool_result'` (the arbiter,
-docs-ping, return-address and bug-report all do) is dead on Claude sessions
-until that is normalized at the backend.
+`tool_use` / `tool_result` events. Codex synthesizes those instead. So in the
+transformer the `tool_result` case is Codex-only and the `user` case is
+Claude-only.
+
+Everything that *observes* tool traffic keys off the standalone shape (the
+arbiter's delivery ledger, docs-ping, return-address, the teammate observer,
+bug-report context), and used to see nothing at all on Claude sessions.
+`operations/events/tool-events.ts` derives those events from the block-carrying
+ones, and `handleEventPre/PostProcessing` fan both the as-arrived event and the
+derived ones out to the observers. Deliberately NOT emitted by `ClaudeCli`:
+the transformer has branches for `assistant` blocks *and* for standalone tool
+events, so synthetic events reaching MessageManager would render every tool line
+twice. New observers go through `notifyToolObservers()` — an observer wired into
+only one of the two paths is live on exactly one backend.
 
 The subagent tool is called **`Agent`**; `Task` is its former name and is still
 accepted. The CLI's `system/init` event advertises `Task` even when every actual

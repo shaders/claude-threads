@@ -71,6 +71,9 @@ const COMMAND_PATTERNS: Array<[string, RegExp]> = [
   // optional on/off makes it idempotent.
   ['mentions', /^!mentions(?:\s+(on|off))?\s*$/i],
 
+  // Chain status — what the arbiter is still waiting on in this thread.
+  ['arbiter', /^!arbiter\s*$/i],
+
   // Updates
   ['update', /^!update(?:\s+(now|defer))?\s*$/i],
 

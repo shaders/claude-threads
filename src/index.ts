@@ -78,6 +78,13 @@ function wirePlatformEvents(
     });
   });
 
+  // An edited post is only ever a liveness signal for the review chain — never
+  // routed as input, or a teammate's rewritten line would replay as a new ask.
+  client.on('post_edited', (post: PlatformPost, user: PlatformUser | null) => {
+    const threadRoot = post.rootId || post.id;
+    session.noteThreadActivity(threadRoot, user?.username || 'unknown', post.message);
+  });
+
   // Wire up connection status events to UI
   client.on('connected', () => {
     ui.setPlatformStatus(platformId, { connected: true, reconnecting: false, reconnectAttempts: 0 });
@@ -607,7 +614,8 @@ async function startWithoutDaemon() {
     config.returnDelivery ?? true,
     config.arbiterPolicy,
     config.docsPing,
-    config.reviewPing
+    config.reviewPing,
+    config.arbiterChain
   );
 
   // Set sticky message customization from config

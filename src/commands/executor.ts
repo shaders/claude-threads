@@ -303,6 +303,23 @@ const handleMentions: CommandHandler = async (ctx, args) => {
 };
 
 /**
+ * Handle !arbiter — list the review-chain steps still open in this thread.
+ *
+ * Read-only, and the reason it exists: a watchdog that acts on its own has to be
+ * inspectable, or the only way to find out what it thinks is to wait and see what
+ * it does.
+ */
+const handleArbiter: CommandHandler = async (ctx) => {
+  if (ctx.commandContext === 'first-message') {
+    return { handled: false }; // nothing is pending before the session exists
+  }
+  if (ctx.isAllowed) {
+    await ctx.sessionManager.reportChainStatus(ctx.threadId);
+  }
+  return { handled: true };
+};
+
+/**
  * Handle !worktree command (unified handling for subcommands and branch creation).
  */
 const handleWorktree: CommandHandler = async (ctx, args) => {
@@ -504,6 +521,7 @@ handlers.set('github-email', handleGitHubEmail);
 handlers.set('cd', handleCd);
 handlers.set('permissions', handlePermissions);
 handlers.set('mentions', handleMentions);
+handlers.set('arbiter', handleArbiter);
 handlers.set('agent', handleAgent);
 handlers.set('worktree', handleWorktree);
 handlers.set('bug', handleBug);

@@ -48,6 +48,7 @@ import {
 } from '../operations/context-prompt/index.js';
 import { formatSideConversationsForClaude } from '../operations/side-conversation/index.js';
 import { extractObligations, createArbiterState, cancelWaiting } from '../operations/arbiter/index.js';
+import { cancelChain, noteIncomingReviewRequest } from '../operations/arbiter/chain/handler.js';
 import {
   captureReturnAddress,
   cancelReturnDelivery,
@@ -179,6 +180,7 @@ function cleanupSessionTimers(session: Session): void {
   cancelDocsPing(session);
   cancelReviewPing(session);
   cancelWaiting(session);
+  cancelChain(session);
 }
 
 /**
@@ -308,6 +310,7 @@ function removeFromRegistry(session: Session, ctx: SessionContext): void {
   cancelDocsPing(session);
   cancelReviewPing(session);
   cancelWaiting(session);
+  cancelChain(session);
   ctx.ops.emitSessionRemove(session.sessionId);
   mutableSessions(ctx).delete(session.sessionId);
   cleanupPostIndex(ctx, session.threadId);
@@ -1257,6 +1260,9 @@ async function startSessionUnlocked(
 
   // Arbiter: track explicit external-delivery obligations from the first message
   extractObligations(session, options.prompt, ctx);
+  // A review handed to us by a teammate usually arrives as the session's very
+  // first message, so the chain has to look here too, not only at follow-ups.
+  noteIncomingReviewRequest(session, ctx, options.prompt, username);
   // Return address: a handoff usually carries "reply to me in the thread: <url>"
   // in the very first message. Fire-and-forget — never blocks session startup.
   void captureReturnAddress(session, options.prompt, username, ctx);
@@ -1744,6 +1750,10 @@ export async function sendFollowUp(
   // (fire-and-forget ledger upkeep, independent of how the message is routed)
   if (!options?.system) {
     extractObligations(session, message, ctx);
+    // A teammate asking us to review an MR puts us on the hook for telling them
+    // the outcome — their session sleeps until mentioned, so a review finished
+    // silently leaves them blocked.
+    noteIncomingReviewRequest(session, ctx, message, username);
     // A follow-up can hand over a NEW reply-to thread (e.g. a different bot
     // picks up the conversation) — re-capture on every user message.
     void captureReturnAddress(session, message, username, ctx);

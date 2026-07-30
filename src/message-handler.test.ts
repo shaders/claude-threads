@@ -78,6 +78,7 @@ function createMockSessionManager() {
     startSessionWithWorktree: mock(async () => {}),
     requestMessageApproval: mock(async () => {}),
     addSideConversation: mock(() => {}),
+    noteThreadActivity: mock(() => {}),
     showUpdateStatusWithoutSession: mock(async () => {}),
     listWorktreesWithoutSession: mock(async () => {}),
     switchToWorktreeWithoutSession: mock(async () => {}),

@@ -28,6 +28,7 @@ import type { ClaudeEvent } from '../../claude/cli.js';
 import { buildDeliveredAnswerFooter, findReturnAddressUrl } from './parser.js';
 import { resolveTeammateRoute, buildHandoffMessage } from '../../teammates/registry.js';
 import { noteBotDelivery } from '../arbiter/handler.js';
+import { noteDeliveredToWaiter } from '../arbiter/chain/handler.js';
 import {
   createReturnDeliveryState,
   type ReturnDeliveryState,
@@ -256,6 +257,8 @@ async function deliverHandback(session: Session, ctx: SessionContext): Promise<v
     await platform.deliverToThread(route.target, body);
     sessionLog(session).info(`📬 Handed back to @${requester} (${route.kind})`);
     noteBotDelivery(session, 'hand-back');
+    // Whatever the chain said we owed this party, they have now heard it.
+    noteDeliveredToWaiter(session, ctx, requester);
   } catch (err) {
     sessionLog(session).warn(`📬 Could not hand back to @${requester}: ${err}`);
   }

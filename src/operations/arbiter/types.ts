@@ -14,6 +14,8 @@
  *    Detection is a cheap LLM verdict over the turn's final message.
  */
 
+import { createChainState, type ChainSessionState, type PersistedChainState } from './chain/state.js';
+
 /**
  * Kind of external delivery the arbiter can hold the agent accountable for.
  * 'message' — post to another channel/person (send_dm, post_message, ...);
@@ -128,6 +130,13 @@ export interface ArbiterSessionState {
    * the next turn re-arms it from the (persisted) pending prompt anyway.
    */
   waiting?: ArbiterWaitingState;
+  /**
+   * The review chain: who owes which step of MR → review → approve → hand back
+   * → report, across two bots. Separate from `obligations` because those are
+   * extracted from what the USER asked for, while these are structural — they
+   * exist because an MR exists, whether anyone mentioned them or not.
+   */
+  chain?: ChainSessionState;
 }
 
 /** Persisted subset of ArbiterSessionState (survives bot restarts) */
@@ -135,6 +144,8 @@ export interface PersistedArbiterState {
   obligations: ArbiterObligation[];
   deliveryToolCalls: string[];
   continuationNudges: number;
+  /** Review-chain ledger. Missing on sessions persisted before the chain existed. */
+  chain?: PersistedChainState;
 }
 
 /** Normalize legacy persisted tool names ('send_dm'/'send_file') to kinds */
@@ -145,6 +156,7 @@ function normalizeKind(tool: string): DeliveryKind {
 
 export function createArbiterState(persisted?: PersistedArbiterState): ArbiterSessionState {
   return {
+    chain: createChainState(persisted?.chain),
     obligations: (persisted?.obligations ?? []).map((o) => ({
       ...o,
       tool: normalizeKind(o.tool as string),

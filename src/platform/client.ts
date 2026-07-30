@@ -24,6 +24,16 @@ export interface PlatformClientEvents {
   reaction_removed: (reaction: PlatformReaction, user: PlatformUser | null) => void;
   /** Emitted when someone posts at channel level (not in a thread) */
   channel_post: (post: PlatformPost, user: PlatformUser | null) => void;
+  /**
+   * Emitted when somebody edits an existing post.
+   *
+   * Carried for one reason: a bot mid-task shows its progress by REWRITING one
+   * rolling tool line, not by posting again. Without edits, a teammate deep in a
+   * long review is indistinguishable from a teammate whose process died, and any
+   * watchdog watching for silence has to be given a window long enough to be
+   * useless. Nothing acts on the content — only on the fact that they are alive.
+   */
+  post_edited: (post: PlatformPost, user: PlatformUser | null) => void;
 }
 
 /**

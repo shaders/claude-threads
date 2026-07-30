@@ -42,9 +42,13 @@ describe('buildHealthSnapshot', () => {
     });
 
     expect(Object.keys(snap).sort()).toEqual([
-      'accounts', 'activeSessions', 'costSince', 'maxSessions', 'pid',
+      'accounts', 'activeSessions', 'chainOpen', 'chainStuck', 'costSince', 'maxSessions', 'pid',
       'processingSessions', 'stalestProcessingSeconds', 'ts',
     ]);
+    // Defaulted rather than omitted: the board reads them unconditionally, and an
+    // absent key would render as "no data" where the truthful answer is zero.
+    expect(snap.chainOpen).toBe(0);
+    expect(snap.chainStuck).toBe(0);
     expect(snap.ts).toBe('2026-07-29T10:00:00.000Z');
     expect(snap.pid).toBe(4242);
     expect(snap.accounts).toEqual(ACCOUNTS);

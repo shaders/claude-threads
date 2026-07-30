@@ -18,6 +18,7 @@ import { createSessionLog } from '../../utils/session-log.js';
 import { post } from '../post-helpers/index.js';
 import { resolveTeammateRoute, buildHandoffMessage } from '../../teammates/registry.js';
 import { noteBotDelivery } from '../arbiter/handler.js';
+import { noteReviewRequest } from '../arbiter/chain/handler.js';
 import type { Session } from '../../session/types.js';
 import type { SessionContext } from '../session-context/index.js';
 import type { ReviewPingConfig } from '../../config/types.js';
@@ -143,6 +144,9 @@ async function deliver(
   if (!route) {
     sessionLog(session).info(`@${cfg.botName} holds no session in this channel — skipping the review ping`);
     state.pinged.add(mrUrl);
+    // Not a silent skip any more: an MR that nobody can be asked to review is a
+    // broken chain, and the only party left who can act on it is a person.
+    noteReviewRequest(session, ctx, mrUrl, 'unreachable');
     return;
   }
   const target = route.target;
@@ -160,6 +164,8 @@ async function deliver(
       `🔍 Asked @${cfg.botName} to review ${mrUrl} (${route?.kind ?? 'channel'})`
     );
     noteBotDelivery(session, 'review ping');
+    // The chain now waits on the reviewer instead of on our own agent.
+    noteReviewRequest(session, ctx, mrUrl, 'delivered');
 
     const fmt = platform.getFormatter();
     await post(session, 'info', `🔍 ${fmt.formatItalic(`Позвал @${cfg.botName} на ревью`)}`);
