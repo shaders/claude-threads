@@ -5,7 +5,7 @@
  * runs through the real handler code.
  */
 
-import { describe, it, expect, mock, beforeEach, afterAll } from 'bun:test';
+import { describe, it, expect, mock, beforeEach, afterEach, afterAll } from 'bun:test';
 
 const quickQueryCfg: { current: { success: boolean; response?: string } } = {
   current: { success: true, response: '{"decide": false, "reason": "нужен человек"}' },
@@ -66,6 +66,17 @@ const QUESTION_SET = {
   ],
 };
 
+/**
+ * Sessions handed out by makeSession, so afterEach can silence every wait they
+ * armed. Without this a test's escalation timer keeps firing during LATER tests
+ * — the escalation ladder re-arms itself — and its judge calls land in the next
+ * test's `quickQueryMock` count. Locally the leak is invisible because tests
+ * finish before the next timer fires; under CI's coverage instrumentation they
+ * don't, which is exactly how "judges a prompt once" started failing on a
+ * counter it does not control.
+ */
+const armedSessions: Session[] = [];
+
 function makeSession(spies: Spies, overrides: Partial<Session> = {}): Session {
   const mm = {
     getPendingQuestionSet: () => null,
@@ -79,7 +90,7 @@ function makeSession(spies: Spies, overrides: Partial<Session> = {}): Session {
       return true;
     }),
   };
-  return {
+  const session = {
     sessionId: 'mm:thread-1',
     threadId: 'thread-1',
     platformId: 'mm',
@@ -107,6 +118,9 @@ function makeSession(spies: Spies, overrides: Partial<Session> = {}): Session {
     messageManager: mm as unknown as Session['messageManager'],
     ...overrides,
   } as unknown as Session;
+
+  armedSessions.push(session);
+  return session;
 }
 
 function makeCtx(spies: Spies, session: Session, policy: Record<string, unknown> = {}): SessionContext {
@@ -144,6 +158,11 @@ beforeEach(() => {
   spies = { posts: [], answered: [], approvals: [], sentToAgent: [] };
   quickQueryCfg.current = { success: true, response: '{"decide": false, "reason": "нужен человек"}' };
   quickQueryMock.mockClear();
+});
+
+afterEach(() => {
+  for (const session of armedSessions) cancelWaiting(session);
+  armedSessions.length = 0;
 });
 
 // ---------------------------------------------------------------------------
