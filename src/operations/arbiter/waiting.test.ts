@@ -5,7 +5,7 @@
  * runs through the real handler code.
  */
 
-import { describe, it, expect, mock, beforeEach, afterAll } from 'bun:test';
+import { describe, it, expect, mock, beforeEach, afterEach, afterAll } from 'bun:test';
 
 const quickQueryCfg: { current: { success: boolean; response?: string } } = {
   current: { success: true, response: '{"decide": false, "reason": "нужен человек"}' },
@@ -35,6 +35,7 @@ const {
 } = await import('./waiting.js');
 const { getArbiterState } = await import('./handler.js');
 
+import { waitFor } from '../../test-utils/wait-for.js';
 import type { Session } from '../../session/types.js';
 import type { SessionContext } from '../session-context/index.js';
 
@@ -65,6 +66,17 @@ const QUESTION_SET = {
   ],
 };
 
+/**
+ * Sessions handed out by makeSession, so afterEach can silence every wait they
+ * armed. Without this a test's escalation timer keeps firing during LATER tests
+ * — the escalation ladder re-arms itself — and its judge calls land in the next
+ * test's `quickQueryMock` count. Locally the leak is invisible because tests
+ * finish before the next timer fires; under CI's coverage instrumentation they
+ * don't, which is exactly how "judges a prompt once" started failing on a
+ * counter it does not control.
+ */
+const armedSessions: Session[] = [];
+
 function makeSession(spies: Spies, overrides: Partial<Session> = {}): Session {
   const mm = {
     getPendingQuestionSet: () => null,
@@ -78,7 +90,7 @@ function makeSession(spies: Spies, overrides: Partial<Session> = {}): Session {
       return true;
     }),
   };
-  return {
+  const session = {
     sessionId: 'mm:thread-1',
     threadId: 'thread-1',
     platformId: 'mm',
@@ -106,6 +118,9 @@ function makeSession(spies: Spies, overrides: Partial<Session> = {}): Session {
     messageManager: mm as unknown as Session['messageManager'],
     ...overrides,
   } as unknown as Session;
+
+  armedSessions.push(session);
+  return session;
 }
 
 function makeCtx(spies: Spies, session: Session, policy: Record<string, unknown> = {}): SessionContext {
@@ -143,6 +158,11 @@ beforeEach(() => {
   spies = { posts: [], answered: [], approvals: [], sentToAgent: [] };
   quickQueryCfg.current = { success: true, response: '{"decide": false, "reason": "нужен человек"}' };
   quickQueryMock.mockClear();
+});
+
+afterEach(() => {
+  for (const session of armedSessions) cancelWaiting(session);
+  armedSessions.length = 0;
 });
 
 // ---------------------------------------------------------------------------
@@ -406,9 +426,16 @@ describe('resolution: escalation', () => {
     const ctx = makeCtx(spies, session);
 
     noteWaiting(session, ctx, undefined);
-    await Bun.sleep(WAIT_MS * 4 + 60); // long enough for several pings
-
-    const pings = spies.posts.filter((p) => p.includes('агент ждёт ответа')).length;
+    // Polled, not slept: a fixed sleep sized for a laptop is the first thing a
+    // loaded CI runner misses, and this test then reports "judged twice" for a
+    // second ping that simply had not happened yet.
+    const pings = await waitFor(
+      () => {
+        const count = spies.posts.filter((p) => p.includes('агент ждёт ответа')).length;
+        return count > 1 ? count : 0;
+      },
+      { timeoutMs: 5000, intervalMs: 10, message: 'expected more than one escalation ping' }
+    );
     expect(pings).toBeGreaterThan(1);
     expect(quickQueryMock).toHaveBeenCalledTimes(1);
     cancelWaiting(session);
