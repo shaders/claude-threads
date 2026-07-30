@@ -88,9 +88,16 @@ function flush(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
-/** Push an expectation's clock into the past so a silence window has elapsed. */
+/**
+ * Push the chain's clocks into the past so a silence window has elapsed.
+ *
+ * `clockBaseAt` has to move too: it floors every silence measurement, so ageing
+ * only the expectation leaves the floor at "now" and nothing is ever overdue —
+ * which is exactly the protection a restart relies on.
+ */
 function ageExpectations(session: Session, ms: number): void {
   const state = getChainState(session);
+  state.clockBaseAt -= ms;
   state.expectations = state.expectations.map((e) => ({
     ...e,
     since: e.since - ms,
@@ -132,12 +139,13 @@ describe('review request outcomes', () => {
 });
 
 describe('liveness from thread traffic', () => {
-  test("the reviewer's own output closes the wait for a reply", () => {
+  test("the reviewer's own output closes the wait for a reply", async () => {
     const session = makeSession();
     const ctx = makeCtx(session);
     noteReviewRequest(session, ctx, MR, 'delivered');
 
     notePartySeen(session, ctx, 'rocksteady', 'смотрю MR, пара вопросов по transformer.ts');
+    await flush();
 
     expect(openExpectations(getChainState(session).expectations)).toEqual([]);
     expect(spies.posts).toEqual([]);

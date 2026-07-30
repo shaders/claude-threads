@@ -21,11 +21,24 @@ export interface ChainSessionState {
   /** Completed turns of our own agent — the "once per turn" clock. */
   turns: number;
   /**
-   * The tail of what each party said in this thread (partyKey → text), for the
-   * one fuzzy question in the chain: did their review ask for changes or not.
-   * Bounded, and never used for anything but that classification.
+   * The last few things each party said in this thread (partyKey → posts), for
+   * the one fuzzy question in the chain: did their review ask for changes or not.
+   *
+   * Kept as posts rather than one truncated string: a reviewer who streams a
+   * status line per file can push its own verdict out of a character window,
+   * and then the classification reads a list of filenames as a conclusion.
    */
-  partyText: Record<string, string>;
+  partyPosts: Record<string, string[]>;
+  /**
+   * Clock origin for silence windows (epoch ms), set when this state is created.
+   *
+   * Load-bearing after a restart. The ledger is persisted with absolute `since` /
+   * `lastNudgeAt` stamps, but the process was not watching the thread while it was
+   * down — so measuring silence from those stamps blames the reviewer for the
+   * bot's own downtime, and the first unrelated post in the thread fires an
+   * escalation. Silence is therefore never measured from before this moment.
+   */
+  clockBaseAt: number;
   /**
    * Review conclusion per MR, once classified. Cached because the answer cannot
    * change without the reviewer speaking again, and because "fixes" means we must
@@ -57,7 +70,8 @@ export function createChainState(persisted?: PersistedChainState): ChainSessionS
     lastSeen: {},
     stalled: [],
     turns: 0,
-    partyText: {},
+    clockBaseAt: Date.now(),
+    partyPosts: {},
     verdicts: {},
     approvals: {},
     reported: [],

@@ -23,6 +23,9 @@ function facts(over: Partial<ChainFacts> = {}): ChainFacts {
     selfSettled: true,
     selfProcessing: false,
     selfTurns: 1,
+    // An hour before anything in these fixtures: the floor only exists to stop a
+    // restart from counting its own downtime as the owner's silence.
+    clockBaseAt: T0 - 60 * 60_000,
     ...over,
   };
 }

@@ -24,6 +24,7 @@ import { extractPullRequestUrl } from '../../../utils/pr-detector.js';
 import { canIntervene } from '../handler.js';
 import type { Session } from '../../../session/types.js';
 import type { SessionContext } from '../../session-context/index.js';
+import type { ArbiterChainConfig } from '../../../config/index.js';
 import { agentNudge, botPing, humanEscalation, stepDescription } from './messages.js';
 import { armExpectation, expectationId, openExpectations, settleExpectation, tick } from './reducer.js';
 import { createChainState, type ChainSessionState } from './state.js';
@@ -51,8 +52,14 @@ export const SETTLE_MS = 90_000;
 /** How often a foreign owner's silence is re-examined while any step is open. */
 export const SILENCE_TICK_MS = 60_000;
 
-/** Cap on the per-party text kept for the review-verdict classification. */
-const MAX_PARTY_TEXT = 4000;
+/** Posts kept per party, and the cap per post, for the verdict classification. */
+const MAX_PARTY_POSTS = 12;
+const MAX_POST_CHARS = 1500;
+
+/** Everything we still remember a party saying, oldest first. */
+function partyTranscript(state: ChainSessionState, key: string): string {
+  return (state.partyPosts[key] ?? []).join('\n\n').trim();
+}
 
 /**
  * Our own bot's rate-limit notice, as it appears in a thread. Matched here
@@ -75,13 +82,42 @@ function enabled(ctx: SessionContext): boolean {
   return ctx.config.arbiterChain?.enabled !== false;
 }
 
+/**
+ * Resolve the policy, refusing to act on a configuration that cannot mean what it
+ * says. Clamped rather than thrown: a typo in one number must not stop a fleet
+ * host from booting, and the log line says exactly what was ignored.
+ *
+ * `workSilenceMs < awakeSilenceMs` is the one that matters — it inverts the whole
+ * design, making a reviewer who IS working get interrupted sooner than one who
+ * never woke up.
+ */
+export function resolveChainPolicy(config: ArbiterChainConfig | undefined, warn?: (msg: string) => void): ChainPolicy {
+  const p = config ?? {};
+  const awakeSilenceMs = positive(p.awakeSilenceMs, DEFAULT_CHAIN_POLICY.awakeSilenceMs, 'awakeSilenceMs', warn);
+  let workSilenceMs = positive(p.workSilenceMs, DEFAULT_CHAIN_POLICY.workSilenceMs, 'workSilenceMs', warn);
+  if (workSilenceMs < awakeSilenceMs) {
+    warn?.(`arbiterChain.workSilenceMs (${workSilenceMs}) is below awakeSilenceMs (${awakeSilenceMs}) — raising it to match`);
+    workSilenceMs = awakeSilenceMs;
+  }
+  let maxReminders = Math.round(p.maxReminders ?? DEFAULT_CHAIN_POLICY.maxReminders);
+  if (!Number.isFinite(maxReminders) || maxReminders < 1) {
+    warn?.(`arbiterChain.maxReminders (${p.maxReminders}) must be at least 1 — using 1`);
+    maxReminders = 1;
+  }
+  return { awakeSilenceMs, workSilenceMs, maxReminders };
+}
+
+function positive(value: number | undefined, fallback: number, field: string, warn?: (msg: string) => void): number {
+  if (value === undefined) return fallback;
+  if (!Number.isFinite(value) || value <= 0) {
+    warn?.(`arbiterChain.${field} (${value}) must be a positive number — using ${fallback}`);
+    return fallback;
+  }
+  return value;
+}
+
 function policy(ctx: SessionContext): ChainPolicy {
-  const p = ctx.config.arbiterChain ?? {};
-  return {
-    awakeSilenceMs: p.awakeSilenceMs ?? DEFAULT_CHAIN_POLICY.awakeSilenceMs,
-    workSilenceMs: p.workSilenceMs ?? DEFAULT_CHAIN_POLICY.workSilenceMs,
-    maxReminders: p.maxReminders ?? DEFAULT_CHAIN_POLICY.maxReminders,
-  };
+  return resolveChainPolicy(ctx.config.arbiterChain, (msg) => log.warn(msg));
 }
 
 /** The reviewer this fleet uses, from the review-ping config. */
@@ -97,10 +133,19 @@ function isReviewerSelf(session: Session, ctx: SessionContext): boolean {
   return Boolean(reviewer && own && reviewer.toLowerCase() === own.toLowerCase());
 }
 
-/** Classify a username: a known teammate is a bot, anyone else is a person. */
-export function partyForUser(session: Session, username: string): Party {
+/**
+ * Classify a username: a known teammate is a bot, anyone else is a person.
+ *
+ * The configured reviewer counts as a bot even when absent from `teammates`.
+ * Those two lists come from different config blocks (`reviewPing.botName` vs
+ * `teammates[].name`), and a typo in either used to mean the reviewer's own reply
+ * was filed as a human's — so `review_reply` never matched it and the chain went
+ * on pinging somebody who had already answered.
+ */
+export function partyForUser(session: Session, ctx: SessionContext, username: string): Party {
   const teammates = session.platform.getMcpConfig?.().teammates ?? [];
-  const isBot = teammates.some((t) => t.name.toLowerCase() === username.toLowerCase());
+  const names = [...teammates.map((t) => t.name), reviewerName(ctx) ?? ''];
+  const isBot = names.some((n) => n && n.toLowerCase() === username.toLowerCase());
   return isBot ? { kind: 'bot', name: username } : { kind: 'human', name: username };
 }
 
@@ -129,7 +174,7 @@ export function notePartySeen(
 ): void {
   if (!enabled(ctx) || !username || username === 'unknown') return;
   const state = getChainState(session);
-  const key = partyKey(partyForUser(session, username));
+  const key = partyKey(partyForUser(session, ctx, username));
 
   // A rate-limit notice is the one post from a party that is NOT a sign of life —
   // it is their bot saying nobody is coming. Counting it as activity would close
@@ -149,14 +194,17 @@ export function notePartySeen(
   // this a teammate is written off for the rest of the session by one bad hour.
   state.stalled = state.stalled.filter((k) => k !== key);
 
-  // Keep the tail of what they said: a review's verdict, its findings and its
-  // file list arrive as several posts, and classifying only the last one reads a
+  // Keep the last few things they said: a review's verdict, its findings and its
+  // file list arrive as separate posts, and classifying only the last one reads a
   // list of file names as a conclusion.
   if (text.trim()) {
-    state.partyText[key] = `${state.partyText[key] ?? ''}\n${text}`.slice(-MAX_PARTY_TEXT);
+    const posts = [...(state.partyPosts[key] ?? []), text.slice(0, MAX_POST_CHARS)];
+    state.partyPosts[key] = posts.slice(-MAX_PARTY_POSTS);
   }
 
-  runTick(session, ctx);
+  // The full cycle, not just the tick: their arrival can be the moment an
+  // approval becomes checkable, and a tick alone cannot ask GitLab anything.
+  runCycle(session, ctx);
 }
 
 /**
@@ -171,7 +219,7 @@ export function noteIncomingReviewRequest(
   username: string | undefined
 ): void {
   if (!enabled(ctx) || !username) return;
-  const requester = partyForUser(session, username);
+  const requester = partyForUser(session, ctx, username);
   if (requester.kind !== 'bot') return; // a human asking is the ordinary case, not a chain
   const mrUrl = extractPullRequestUrl(message);
   if (!mrUrl) return;
@@ -232,9 +280,16 @@ export function noteReviewRequest(
     });
     sessionLog(session).info(`⛓️ Waiting for @${reviewer} on ${mrUrl}`);
   } else {
+    // Escalate only on the transition. review-ping marks an MR as pinged before
+    // it reports, so a double call should not be possible — but "should not" is
+    // not a guarantee, and the cost of being wrong is a second @mention of a
+    // person about a chain they were already told about.
+    const wasOpen = state.expectations.some((e) => e.id === id && e.state === 'open');
     state.expectations = settleExpectation(state.expectations, id, 'failed', 'reviewer unreachable');
     const target = state.expectations.find((e) => e.id === id);
-    if (target) void execute(session, ctx, { type: 'escalate_human', expectation: target, reason: 'unreachable' });
+    if (wasOpen && target) {
+      void execute(session, ctx, { type: 'escalate_human', expectation: target, reason: 'unreachable' });
+    }
   }
 
   persistIfActive(session, ctx);
@@ -249,7 +304,7 @@ export function noteReviewRequest(
 export function noteDeliveredToWaiter(session: Session, ctx: SessionContext, waiter: string): void {
   if (!enabled(ctx)) return;
   const state = getChainState(session);
-  const key = partyKey(partyForUser(session, waiter));
+  const key = partyKey(partyForUser(session, ctx, waiter));
   let changed = false;
   for (const expectation of openExpectations(state.expectations)) {
     if (partyKey(expectation.waiter) !== key) continue;
@@ -307,15 +362,46 @@ export function cancelChain(session: Session): void {
 // ---------------------------------------------------------------------------
 
 /**
- * Only run the silence clock while something foreign is actually pending. An
- * always-on interval per session would be a timer per thread doing nothing for
- * hours, on a host where one runaway process has already taken the fleet down.
+ * Is there anything a tick could still advance?
+ *
+ * This is deliberately broader than "an open step owned by somebody else", and
+ * getting that wrong killed the chain's main scenario: `review_reply` is
+ * satisfied by the reviewer's FIRST post ("смотрю MR"), which used to leave no
+ * open foreign step at all — so the interval was cleared while the two pieces of
+ * work that only a tick performs were still pending. Both live in `runCycle`:
+ * classifying the review once the reviewer goes quiet, and asking GitLab whether
+ * the approval appeared. The reviewer then read the diff for ten minutes, nobody
+ * ticked, no approval was ever checked, and the human was never told.
+ */
+export function hasClockWork(state: ChainSessionState): boolean {
+  const open = openExpectations(state.expectations);
+
+  // Someone else's silence has to be watched.
+  if (open.some((e) => e.owner.kind !== 'agent')) return true;
+  // An approval we are waiting for is only ever observed by polling GitLab —
+  // including when the owner is our own agent (we are the reviewer).
+  if (open.some((e) => e.kind === 'mr_approved')) return true;
+  // A reply that landed but has not been judged yet: the verdict decides whether
+  // an approval is owed, and it is judged from silence, which needs a clock.
+  if (state.expectations.some((e) =>
+    e.kind === 'review_reply' && e.state === 'satisfied' && e.subject && !state.verdicts[e.subject]
+  )) return true;
+  // Our own review, not yet judged. Also the retry path for a classification that
+  // timed out — otherwise one hung haiku call loses the self-check forever.
+  if (open.some((e) => e.kind === 'review_handback' && e.subject && !state.verdicts[e.subject])) return true;
+
+  return false;
+}
+
+/**
+ * Only run the clock while something is actually pending. An always-on interval
+ * per session would be a timer per thread doing nothing for hours, on a host
+ * where one runaway process has already taken the fleet down.
  */
 function ensureTimer(session: Session, ctx: SessionContext): void {
   const state = getChainState(session);
-  const waitingOnOthers = openExpectations(state.expectations).some((e) => e.owner.kind !== 'agent');
 
-  if (!waitingOnOthers) {
+  if (!hasClockWork(state)) {
     if (state.timer) clearTimeout(state.timer);
     state.timer = undefined;
     return;
@@ -349,6 +435,7 @@ export function buildFacts(session: Session): ChainFacts {
     selfProcessing: session.isProcessing,
     selfSettled: Boolean(state.lastResultAt) && now - (state.lastResultAt ?? 0) >= SETTLE_MS,
     selfTurns: state.turns,
+    clockBaseAt: state.clockBaseAt,
   };
 }
 
@@ -449,8 +536,8 @@ async function judgeFinishedReviews(
     const lastSeen = state.lastSeen[key] ?? 0;
     if (!lastSeen || now - lastSeen < window) continue; // still talking — not finished
 
-    const text = state.partyText[key];
-    if (!text?.trim()) continue;
+    const text = partyTranscript(state, key);
+    if (!text) continue;
 
     const verdict = await classifyReviewVerdict(text);
     if (!verdict) continue;
@@ -526,7 +613,7 @@ async function reportTaskDone(
   if (state.reported.includes(subject)) return;
   const requester = session.startedBy;
   if (!requester) return;
-  if (partyForUser(session, requester).kind !== 'human') return;
+  if (partyForUser(session, ctx, requester).kind !== 'human') return;
 
   state.reported.push(subject);
   state.expectations = armExpectation(state.expectations, {

@@ -88,7 +88,10 @@ export function openExpectations(expectations: Expectation[]): Expectation[] {
  */
 function silenceMs(expectation: Expectation, facts: ChainFacts): number {
   const seen = facts.lastSeen[partyKey(expectation.owner)] ?? 0;
-  const baseline = Math.max(expectation.since, seen, expectation.lastNudgeAt ?? 0);
+  // clockBaseAt floors the whole calculation: a ledger restored from disk carries
+  // stamps from before the restart, and the downtime in between is our silence,
+  // not the owner's.
+  const baseline = Math.max(expectation.since, seen, expectation.lastNudgeAt ?? 0, facts.clockBaseAt);
   return facts.now - baseline;
 }
 

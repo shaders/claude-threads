@@ -125,6 +125,15 @@ export interface ChainFacts {
    * inside one turn carry the same number, so only the first can nudge.
    */
   selfTurns: number;
+  /**
+   * Earliest moment silence may be measured from (epoch ms).
+   *
+   * After a restart the ledger still carries absolute `since` stamps from before
+   * the process died, and nothing was watching the thread in between. Without
+   * this floor the first post after a long downtime escalates immediately,
+   * accusing the owner of silence that was in fact our own outage.
+   */
+  clockBaseAt: number;
 }
 
 export interface ChainPolicy {

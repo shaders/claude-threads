@@ -98,6 +98,12 @@ arbiterChain:
   maxReminders: 2          # then a person is told instead
 ```
 
+**The reviewer's name is read from `reviewPing.botName`**, and it should also
+appear in `teammates[]` — that list is what classifies who posted as a bot rather
+than a person. The chain tolerates a mismatch (the configured reviewer counts as a
+bot either way), but every other cross-bot feature routes through `teammates`, so
+keep them in step.
+
 Both numbers are **silence windows measured from the owner's last sign of life**,
 not deadlines on the task: a reviewer visibly working on a long diff is never
 interrupted, while one whose process died is noticed in minutes. Post edits count
@@ -108,6 +114,14 @@ from a dead one.
 Two shortcuts skip the reminder ladder entirely, because in both cases nudging
 cannot work: a reviewer whose bot announced a rate limit in the thread, and a
 reviewer who holds no session in this channel at all. Both go straight to a human.
+
+Nonsense values are clamped with a warning rather than accepted: a
+`workSilenceMs` below `awakeSilenceMs` inverts the design (a reviewer who *is*
+working would be interrupted sooner than one who never woke up), and
+`maxReminders: 0` would escalate to a person on the first tick.
+
+After a restart, silence is measured from the moment the process came up, never
+from the stamps in the restored ledger — the downtime was ours, not the owner's.
 
 `!arbiter` lists what the chain is still waiting on in a thread; `health.json`
 carries `chainOpen` and `chainStuck` so a stuck chain is visible on the status
