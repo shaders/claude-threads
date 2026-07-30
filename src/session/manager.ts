@@ -18,7 +18,7 @@ import type { AgentType, CodexAgentConfig } from '../agents/types.js';
 import type { PlatformClient, PlatformUser, PlatformPost, PlatformFile } from '../platform/index.js';
 import { SessionStore, PersistedSession, PersistedContextPrompt } from '../persistence/session-store.js';
 import { GitHubEmailsStore } from '../persistence/github-emails-store.js';
-import { WorktreeMode, type ArbiterPolicyConfig, type PlatformSessionDefaults, type DocsPingConfig,
+import { WorktreeMode, type ArbiterPolicyConfig, type ArbiterChainConfig, type PlatformSessionDefaults, type DocsPingConfig,
   ReviewPingConfig, type LimitsConfig, type ResolvedLimits, type ClaudeAccount, type PermissionMode, type OverheadVisibility, type PlatformOverhead, DEFAULT_OVERHEAD_VISIBILITY, resolveLimits, effectivePermissionMode } from '../config/index.js';
 import { AccountPool } from '../claude/account-pool.js';
 import { probeAccountUsage } from '../claude/usage-probe.js';
@@ -40,6 +40,7 @@ import * as plugin from '../operations/plugin/index.js';
 import type { Session, InitialSessionOptions } from './types.js';
 import { SessionRegistry } from './registry.js';
 import * as reactionRouter from './reaction-router.js';
+import * as chain from '../operations/arbiter/chain/handler.js';
 import { post } from '../operations/post-helpers/index.js';
 import { createLogger } from '../utils/logger.js';
 
@@ -97,6 +98,7 @@ export class SessionManager extends EventEmitter {
   private codexConfig?: CodexAgentConfig;
   private arbiterEnabled: boolean;
   private arbiterPolicy?: ArbiterPolicyConfig;
+  private arbiterChainConfig?: ArbiterChainConfig;
   private docsPingConfig?: DocsPingConfig;
   private reviewPingConfig?: ReviewPingConfig;
   private returnDeliveryEnabled: boolean;
@@ -177,7 +179,8 @@ export class SessionManager extends EventEmitter {
     returnDeliveryEnabled = true,
     arbiterPolicy?: ArbiterPolicyConfig,
     docsPingConfig?: DocsPingConfig,
-    reviewPingConfig?: ReviewPingConfig
+    reviewPingConfig?: ReviewPingConfig,
+    arbiterChain?: ArbiterChainConfig
   ) {
     super();
     this.workingDir = workingDir;
@@ -192,6 +195,7 @@ export class SessionManager extends EventEmitter {
     this.codexConfig = codexConfig;
     this.arbiterEnabled = arbiterEnabled;
     this.arbiterPolicy = arbiterPolicy;
+    this.arbiterChainConfig = arbiterChain;
     this.docsPingConfig = docsPingConfig;
     this.reviewPingConfig = reviewPingConfig;
     this.returnDeliveryEnabled = returnDeliveryEnabled;
@@ -351,6 +355,7 @@ export class SessionManager extends EventEmitter {
       codex: this.codexConfig,
       arbiterEnabled: this.arbiterEnabled,
       arbiterPolicy: this.arbiterPolicy,
+      arbiterChain: this.arbiterChainConfig,
       docsPing: this.docsPingConfig,
       reviewPing: this.reviewPingConfig,
       returnDeliveryEnabled: this.returnDeliveryEnabled,
@@ -588,6 +593,37 @@ export class SessionManager extends EventEmitter {
     return session?.messageManager?.hasPendingContextPrompt() ?? false;
   }
 
+  /**
+   * Somebody spoke (or edited a post) in a thread we hold a session in.
+   *
+   * The review chain's only liveness signal for another bot. Routed here rather
+   * than through the normal message path because that path deliberately drops
+   * traffic not addressed to us — which is exactly a teammate's own output, the
+   * traffic that proves they are alive and working.
+   */
+  noteThreadActivity(threadId: string, username: string, text: string): void {
+    const session = this.findSessionByThreadId(threadId);
+    if (!session) return;
+    chain.notePartySeen(session, this.getContext(), username, text);
+  }
+
+  /** Open review-chain steps for a thread, for `!arbiter` and the session header. */
+  getOpenChainSteps(threadId: string): string[] {
+    const session = this.findSessionByThreadId(threadId);
+    return session ? chain.describeOpenSteps(session) : [];
+  }
+
+  /** Answer `!arbiter` in the thread: what the chain is still waiting on. */
+  async reportChainStatus(threadId: string): Promise<void> {
+    const session = this.findSessionByThreadId(threadId);
+    if (!session) return;
+    const steps = chain.describeOpenSteps(session);
+    const body = steps.length
+      ? `⛓️ Арбитр ждёт:\n${steps.map((s) => `• ${s}`).join('\n')}`
+      : '⛓️ Арбитр ничего не ждёт — цепочка чиста.';
+    await post(session, 'info', body);
+  }
+
   // ---------------------------------------------------------------------------
   // Event Handling (delegates to MessageManager)
   // ---------------------------------------------------------------------------
@@ -698,6 +734,11 @@ export class SessionManager extends EventEmitter {
           obligations: session.arbiter.obligations,
           deliveryToolCalls: session.arbiter.deliveryToolCalls,
           continuationNudges: session.arbiter.continuationNudges,
+          // Ledger only: silence bookkeeping and the turn clock are rebuilt from
+          // scratch, because after a restart we have not been watching the thread.
+          chain: session.arbiter.chain
+            ? { expectations: session.arbiter.chain.expectations }
+            : undefined,
         }
         : undefined,
       returnDelivery: session.returnDelivery
@@ -808,7 +849,13 @@ export class SessionManager extends EventEmitter {
     // Summing both here is what makes the board's figure current instead of
     // lagging by however long the busiest thread happens to run.
     const liveCost = new Map<string, number>();
+    let chainOpen = 0;
+    let chainStuck = 0;
     for (const session of this.registry.getSessions().values()) {
+      for (const step of session.arbiter?.chain?.expectations ?? []) {
+        if (step.state === 'open') chainOpen++;
+        else if (step.state === 'failed') chainStuck++;
+      }
       const accountId = session.claudeAccountId;
       const spent = session.usageStats?.totalCostUSD ?? 0;
       if (accountId && spent > 0) {
@@ -827,6 +874,8 @@ export class SessionManager extends EventEmitter {
       processingSessions: processing,
       stalestProcessingSeconds: stalest,
       costSince: this.accountPool.costCountingSince(),
+      chainOpen,
+      chainStuck,
       accounts: this.accountPool.status().map((a) => ({
         id: a.id,
         coolingUntil: a.coolingUntil,

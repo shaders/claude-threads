@@ -93,6 +93,17 @@ export interface HealthSnapshot {
    * minutes or a week, and the reader cannot tell which.
    */
   costSince: number;
+  /**
+   * Review-chain steps still open across all sessions, and how many were given up
+   * on and handed to a person.
+   *
+   * On the board these two separate "busy" from "stuck": open steps are normal
+   * traffic, but a `chainStuck` above zero means a review, an approval or a report
+   * has already outlived its reminders and nobody may have noticed. Counted here
+   * rather than derived by the watcher because only the bot knows its ledger.
+   */
+  chainOpen: number;
+  chainStuck: number;
   accounts: HealthAccount[];
 }
 
@@ -107,6 +118,8 @@ export interface HealthInput {
   processingSessions: number;
   stalestProcessingSeconds: number | null;
   costSince: number;
+  chainOpen?: number;
+  chainStuck?: number;
   accounts: HealthAccount[];
   now?: Date;
   pid?: number;
@@ -122,6 +135,8 @@ export function buildHealthSnapshot(input: HealthInput): HealthSnapshot {
     processingSessions: input.processingSessions,
     stalestProcessingSeconds: input.stalestProcessingSeconds,
     costSince: input.costSince,
+    chainOpen: input.chainOpen ?? 0,
+    chainStuck: input.chainStuck ?? 0,
     accounts: input.accounts,
   };
 }

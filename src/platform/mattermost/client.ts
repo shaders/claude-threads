@@ -648,6 +648,31 @@ export class MattermostClient extends BasePlatformClient {
       return;
     }
 
+    // Handle post_edited events — a liveness signal, not a message.
+    //
+    // A claude-threads bot mid-task rewrites one rolling tool line instead of
+    // posting again, so on this socket a teammate hard at work looks exactly like
+    // a teammate whose process died. Emitted separately from `message` on purpose:
+    // an edit must never be routed to an agent as new input (it would replay
+    // instructions the agent has already acted on), it only says "alive".
+    if (event.event === 'post_edited') {
+      const data = event.data as unknown as PostedEventData;
+      if (!data.post) return;
+
+      try {
+        const post = JSON.parse(data.post) as MattermostPost;
+        if (post.user_id === this.botUserId) return;
+        if (post.channel_id !== this.channelId) return;
+
+        this.getUser(post.user_id).then((user) => {
+          this.emit('post_edited', this.normalizePlatformPost(post), user);
+        }).catch(() => { /* liveness only — a missing user lookup is not worth a log line */ });
+      } catch (err) {
+        wsLogger.warn(`Failed to parse edited post: ${err}`);
+      }
+      return;
+    }
+
     // Handle reaction_added events
     if (event.event === 'reaction_added') {
       const data = event.data as unknown as ReactionAddedEventData;

@@ -133,6 +133,12 @@ export async function handleMessage(
     // Use registry to check for active session directly
     const activeSession = session.registry.findByThreadId(threadRoot);
     if (activeSession) {
+      // Before any routing decision: record that this party is alive in this
+      // thread. The review chain's only evidence about another bot is its traffic
+      // here, and every gate below this point exists to DROP traffic that is not
+      // addressed to us — which is exactly a teammate's own output.
+      session.noteThreadActivity(threadRoot, username, message);
+
       // If message starts with @mention to someone else, track it as side conversation (if from approved user).
       // A message that ALSO mentions the bot anywhere is directed at the bot, not a side
       // conversation ("@anna fyi - @bot please fix X" must still trigger the bot).

@@ -227,6 +227,13 @@ export const COMMAND_REGISTRY: CommandDefinition[] = [
     isStackable: true,  // !permissions <mode> can be followed by more commands or prompt
   },
   {
+    command: 'arbiter',
+    description: 'Show what the arbiter is still waiting on in this thread',
+    category: 'settings',
+    audience: 'user',
+    claudeNotes: 'Read-only status; nothing for you to act on',
+  },
+  {
     command: 'mentions',
     description: 'Toggle quiet mode: only respond when @mentioned by name',
     args: 'on / off',

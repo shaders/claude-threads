@@ -34,6 +34,7 @@ platforms:
 | `respondOnlyWhenMentioned` | Start new threads in quiet mode, where the bot only replies to messages that @mention it. Users can still toggle per-thread with `!mentions`. | `false` |
 | `arbiter` | Completion watchdog. After each turn: reminds the agent about external deliveries it forgot (a `send_dm`/`send_file` the user asked for, max 2 reminders then a warning post), and nudges it to continue when it stalls asking "should I proceed?" (max 3 nudges per session; genuine blocking questions are left to humans). Uses out-of-band Haiku calls. | `true` |
 | `arbiterPolicy` | What the arbiter does when a session is parked waiting on a human and nobody answers — see [Arbiter policy](#arbiter-policy) below. | see below |
+| `arbiterChain` | Cross-bot review chain: MR → review requested → reviewer answers → approval in GitLab → result handed back → human told. See [Review chain](#review-chain) below. Needs `reviewPing.botName` to know who the reviewer is. | on |
 | `returnDelivery` | Guaranteed reply to the requester's thread. When an incoming message carries a reply-to directive with a permalink ("отвечай мне в тред: `<url>`" / "reply in the thread: `<url>`"), the bot records that thread as the session's return address and — once the session has been quiet for 90s — posts the final assistant message there itself, mentioning the requester and linking back to its own thread. Purely deterministic, no LLM. If the agent already posted to that thread on its own, the bot stays out of the way. | `true` |
 | `docsPing` | Tells a docs bot about shipped changes — see [Docs ping](#docs-ping) below. | off |
 | `teammates` | Other bots this bot can hand work to (`[{name, channelId}]`). Backs the `send_to_teammate` tool and the docs ping, which route through one shared rule: a teammate who holds sessions in the current channel is addressed in the current thread; anyone else is reached in their own channel with a link back. Without it `send_to_teammate` reports an unknown teammate. | none |
@@ -66,6 +67,51 @@ arbiterPolicy:
 `escalateTo` matters for bot-to-bot work: without it the ping goes to the
 agent that handed the task over, which may be just as stuck. Naming a human
 routes it to someone who can actually unblock things.
+
+### Review chain
+
+The steps around a merge request span two bots on two hosts, and each of them has
+exactly one party that can perform it. The chain records who owes which step and
+chases it — our own agent with an injected instruction, another bot with a mention
+in the same thread (the only thing that wakes its session), a person with an
+@mention once reminders are spent.
+
+Closure is an event, never a deadline:
+
+| Step | Owner | Closed by |
+|------|-------|-----------|
+| review requested | our agent | the review ping landing, or the agent's own delivery call |
+| reviewer answers | reviewer bot | any post or post edit of theirs in this thread |
+| approval | whoever reviewed | an approval (or a merge) seen through `glab` |
+| result handed back | the reviewer's agent | the hand-back delivery |
+| human told | our agent | the bot's own "готово" mention to the requester |
+
+The only model call in the chain is one haiku classification of the finished
+review — clean or changes needed — because that decides whether an approval is
+owed at all. Everything else is a fact.
+
+```yaml
+arbiterChain:
+  enabled: true
+  awakeSilenceMs: 120000   # 2 min of silence = the owner never woke up
+  workSilenceMs: 300000    # 5 min of silence after they HAVE shown up
+  maxReminders: 2          # then a person is told instead
+```
+
+Both numbers are **silence windows measured from the owner's last sign of life**,
+not deadlines on the task: a reviewer visibly working on a long diff is never
+interrupted, while one whose process died is noticed in minutes. Post edits count
+as signs of life on purpose — a bot mid-task rewrites one rolling tool line
+instead of posting again, so without edits a busy teammate is indistinguishable
+from a dead one.
+
+Two shortcuts skip the reminder ladder entirely, because in both cases nudging
+cannot work: a reviewer whose bot announced a rate limit in the thread, and a
+reviewer who holds no session in this channel at all. Both go straight to a human.
+
+`!arbiter` lists what the chain is still waiting on in a thread; `health.json`
+carries `chainOpen` and `chainStuck` so a stuck chain is visible on the status
+board without reading threads.
 
 ### Docs ping
 

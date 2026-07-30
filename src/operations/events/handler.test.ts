@@ -14,6 +14,7 @@ import {
 import type { SessionContext } from '../session-context/index.js';
 import type { Session } from '../../session/types.js';
 import { createSessionTimers, createSessionLifecycle } from '../../session/types.js';
+import { createArbiterState } from '../arbiter/index.js';
 import type { PlatformClient, PlatformPost } from '../../platform/index.js';
 import { createMockFormatter } from '../../test-utils/mock-formatter.js';
 
@@ -316,6 +317,75 @@ describe('handleEventPostProcessing', () => {
     handleEventPostProcessing(session, event, ctx);
 
     expect(session.pullRequestUrl).toBe('https://github.com/user/repo/pull/100');
+  });
+
+  // The arbiter observes tool traffic through the standalone event shape, which
+  // Claude never sends: its calls ride inside `assistant` and its outcomes inside
+  // `user`. Without the derivation in tool-events.ts these two events close
+  // nothing and the arbiter goes on reminding about a delivery already made.
+  test('closes a delivery obligation from Claude-shaped tool blocks', () => {
+    session.arbiter = createArbiterState({
+      obligations: [{ description: 'отписаться @rocksteady на ревью', tool: 'message', status: 'open', remindCount: 0 }],
+      deliveryToolCalls: [],
+      continuationNudges: 0,
+    });
+
+    handleEventPostProcessing(session, {
+      type: 'assistant',
+      message: {
+        content: [
+          { type: 'text', text: 'передаю на ревью' },
+          { type: 'tool_use', id: 'tu_1', name: 'mcp__claude-threads-mcp__send_to_teammate', input: { teammate: 'rocksteady' } },
+        ],
+      },
+    }, ctx);
+
+    // Attempt only — a call whose result never comes back must not count.
+    expect(session.arbiter.obligations[0].status).toBe('open');
+
+    handleEventPostProcessing(session, {
+      type: 'user',
+      message: { content: [{ type: 'tool_result', tool_use_id: 'tu_1', content: 'delivered' }] },
+    }, ctx);
+
+    expect(session.arbiter.obligations[0].status).toBe('fulfilled');
+    expect(session.arbiter.deliveryToolCalls).toContain('message');
+  });
+
+  test('leaves the obligation open when the delivery failed', () => {
+    session.arbiter = createArbiterState({
+      obligations: [{ description: 'отписаться @rocksteady на ревью', tool: 'message', status: 'open', remindCount: 0 }],
+      deliveryToolCalls: [],
+      continuationNudges: 0,
+    });
+
+    handleEventPostProcessing(session, {
+      type: 'assistant',
+      message: {
+        content: [{ type: 'tool_use', id: 'tu_1', name: 'mcp__claude-threads-mcp__send_to_teammate', input: {} }],
+      },
+    }, ctx);
+    handleEventPostProcessing(session, {
+      type: 'user',
+      message: { content: [{ type: 'tool_result', tool_use_id: 'tu_1', is_error: true, content: 'unknown teammate' }] },
+    }, ctx);
+
+    expect(session.arbiter.obligations[0].status).toBe('open');
+    expect(session.arbiter.deliveryToolCalls).toEqual([]);
+    // "Still open" is also what a completely unobserved result looks like, so
+    // pin the observation itself: the error was seen and recorded.
+    expect(session.recentEvents.some((e) => e.type === 'tool_error')).toBe(true);
+  });
+
+  test('records Claude-embedded tool calls for bug-report context', () => {
+    handleEventPreProcessing(session, {
+      type: 'assistant',
+      message: {
+        content: [{ type: 'tool_use', id: 'tu_9', name: 'Bash', input: { command: 'ls' } }],
+      },
+    }, ctx);
+
+    expect(session.recentEvents.some((e) => e.type === 'tool_use' && e.summary === 'Bash')).toBe(true);
   });
 
   // NOTE: Subagent toggle reaction tests have been moved to subagent.test.ts

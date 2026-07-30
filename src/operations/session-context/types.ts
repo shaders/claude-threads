@@ -19,7 +19,7 @@ import type { SessionStore } from '../../persistence/session-store.js';
 import type { GitHubEmailsStore } from '../../persistence/github-emails-store.js';
 import type { SessionInfo } from '../../ui/types.js';
 import type { BuiltMessageContent } from '../streaming/handler.js';
-import type { ArbiterPolicyConfig, DocsPingConfig,
+import type { ArbiterPolicyConfig, ArbiterChainConfig, DocsPingConfig,
   ReviewPingConfig, PlatformSessionDefaults, ClaudeAccount, PermissionMode, PlatformOverhead } from '../../config/index.js';
 import type { AccountPoolStatus, AcquireOptions } from '../../claude/account-pool.js';
 
@@ -63,6 +63,8 @@ export interface SessionConfig {
   arbiterEnabled?: boolean;
   /** Arbiter policy for sessions parked waiting on a human */
   arbiterPolicy?: ArbiterPolicyConfig;
+  /** Review-chain watchdog: MR → review → approve → hand back → report */
+  arbiterChain?: ArbiterChainConfig;
   /** Return-address delivery: bot posts the final answer to the requester's thread (default: true) */
   returnDeliveryEnabled?: boolean;
   /** Quiet period before the return delivery fires, ms (default: QUIESCENCE_MS) */

@@ -21,6 +21,7 @@ export type {
   OverheadVisibility,
   PlatformOverhead,
   ArbiterPolicyConfig,
+  ArbiterChainConfig,
   DocsPingConfig,
   ReviewPingConfig,
   PlatformSessionDefaults,

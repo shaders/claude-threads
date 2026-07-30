@@ -241,6 +241,11 @@ export interface Config {
    */
   arbiterPolicy?: ArbiterPolicyConfig;
   /**
+   * Review-chain watchdog — the cross-bot steps around an MR. See
+   * ArbiterChainConfig; needs `reviewPing.botName` to know who the reviewer is.
+   */
+  arbiterChain?: ArbiterChainConfig;
+  /**
    * Return-address delivery (default: true). When an incoming message says
    * "reply to me in this thread: <permalink>", the bot itself posts the
    * session's final answer into that thread once the session goes quiet —
@@ -305,6 +310,32 @@ export interface ArbiterPolicyConfig {
  * The mirror of DocsPingConfig; the reviewer's own sessions are skipped
  * automatically (by name and by channel).
  */
+/**
+ * Review-chain watchdog: MR → ревью → апрув → передача заказчику → рапорт.
+ *
+ * Windows, not deadlines. Every step closes on an event (our turn ending, the
+ * reviewer posting, an approval appearing in GitLab), and these numbers only say
+ * how long an owner may be SILENT before we conclude nobody is home — measured
+ * from their last sign of life, so a reviewer that is visibly working is never
+ * interrupted.
+ */
+export interface ArbiterChainConfig {
+  /** Default: on whenever the arbiter is on. */
+  enabled?: boolean;
+  /**
+   * Silence allowed before we decide the owner never woke up, ms (default 2 min).
+   * A mention wakes a teammate's session at once, so this is short by design.
+   */
+  awakeSilenceMs?: number;
+  /**
+   * Silence allowed after the owner has shown up, ms (default 5 min). Covers a
+   * reviewer legitimately quiet while reading a diff.
+   */
+  workSilenceMs?: number;
+  /** Nudges to the owner before the humans are told instead (default 2). */
+  maxReminders?: number;
+}
+
 export interface ReviewPingConfig {
   enabled?: boolean;
   /** Channel of the reviewer bot to post into. Required. */
